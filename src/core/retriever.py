@@ -1,0 +1,167 @@
+"""混合检索：BM25 + 向量 + RRF 融合 + 重排序"""
+import re
+import logging
+from rank_bm25 import BM25Okapi
+import jieba
+
+from config.settings import RRF_K, RERANK_TOP_K, VECTOR_TOP_K, BM25_TOP_K
+from src.core.embedding import vector_store
+
+logger = logging.getLogger(__name__)
+
+
+class BM25Index:
+    """基于 rank_bm25 的 BM25 索引"""
+
+    def __init__(self):
+        self.bm25 = None
+        self.chunk_map: dict[str, dict] = {}
+
+    def build_index(self, chunks: list[dict]):
+        """从 chunks 构建 BM25 索引"""
+        self.chunk_map = {c["chunk_id"]: c for c in chunks}
+        texts = [c["text"] for c in chunks]
+
+        # 中英文混合分词
+        tokenized = []
+        for text in texts:
+            # 英文按空格分割，中文用 jieba
+            en_tokens = re.findall(r'[a-zA-Z]+', text)
+            zh_tokens = list(jieba.cut(text))
+            tokenized.append(en_tokens + zh_tokens)
+
+        self.bm25 = BM25Okapi(tokenized)
+        logger.info(f"BM25 索引已构建，共 {len(chunks)} 个文档")
+
+    def search(self, query: str, top_k: int = 20) -> list[dict]:
+        """BM25 检索"""
+        if not self.bm25:
+            return []
+        en_tokens = re.findall(r'[a-zA-Z]+', query)
+        zh_tokens = list(jieba.cut(query))
+        tokenized_query = en_tokens + zh_tokens
+
+        scores = self.bm25.get_scores(tokenized_query)
+        ranked = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
+
+        results = []
+        chunk_ids = list(self.chunk_map.keys())
+        for idx in ranked[:top_k]:
+            cid = chunk_ids[idx]
+            chunk = self.chunk_map[cid]
+            results.append({
+                "chunk_id": cid,
+                "text": chunk["text"],
+                "metadata": chunk.get("metadata", {}),
+                "bm25_score": float(scores[idx]),
+            })
+        return results
+
+
+# 全局 BM25 索引
+bm25_index = BM25Index()
+
+
+def reciprocal_rank_fusion(vector_results: list[dict], bm25_results: list[dict],
+                           k: int = RRF_K) -> list[str]:
+    """RRF 融合两路检索结果"""
+    scores = {}
+
+    for rank, doc in enumerate(vector_results):
+        doc_id = doc["chunk_id"]
+        scores[doc_id] = scores.get(doc_id, 0) + 1.0 / (k + rank + 1)
+
+    for rank, doc in enumerate(bm25_results):
+        doc_id = doc["chunk_id"]
+        scores[doc_id] = scores.get(doc_id, 0) + 1.0 / (k + rank + 1)
+
+    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    return [doc_id for doc_id, _ in ranked]
+
+
+def rerank_by_relevance(query: str, candidates: list[dict], top_k: int = RERANK_TOP_K) -> list[dict]:
+    """基于向量距离的重排序（MVP 简化版，不用 BGE-reranker 以减少依赖）"""
+    # 计算查询与候选的相似度
+    # 这里用向量距离作为 rerank 依据（MVP 简化）
+    scored = []
+    for c in candidates:
+        # 简单关键词匹配加分
+        score = 1.0 / (1.0 + c.get("distance", 1.0))
+        query_terms = set(re.findall(r'[a-zA-Z]{3,}', query.lower()))
+        text_terms = set(re.findall(r'[a-zA-Z]{3,}', c["text"].lower()))
+        overlap = len(query_terms & text_terms)
+        if overlap > 0:
+            score += 0.1 * overlap
+        scored.append((c, score))
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return [c for c, s in scored[:top_k]]
+
+
+def hybrid_search(query: str, top_k: int = RERANK_TOP_K, where: dict = None) -> list[dict]:
+    """混合检索主入口：向量 + BM25 → RRF 融合 → 重排序"""
+    # 1. 向量检索
+    vector_results = vector_store.vector_search(query, top_k=VECTOR_TOP_K, where=where)
+
+    # 2. BM25 检索
+    bm25_results = bm25_index.search(query, top_k=BM25_TOP_K)
+
+    # 3. RRF 融合
+    fused_ids = reciprocal_rank_fusion(vector_results, bm25_results)
+
+    # 4. 收集候选文档
+    id_to_doc = {}
+    for doc in vector_results + bm25_results:
+        id_to_doc[doc["chunk_id"]] = doc
+
+    candidates = [id_to_doc[cid] for cid in fused_ids if cid in id_to_doc]
+
+    # 5. 重排序
+    results = rerank_by_relevance(query, candidates, top_k=top_k)
+
+    # 6. 格式化输出（带引用信息）
+    for r in results:
+        meta = r.get("metadata", {})
+        r["citation"] = f"[{meta.get('authors', 'Unknown')}, {meta.get('year', 'N/A')}]"
+        r["paper_title"] = meta.get("paper_title", "")
+        r["section_title"] = meta.get("section_title", "")
+
+    return results
+
+
+def format_chunks_with_citations(chunks: list[dict]) -> str:
+    """为检索片段添加引用标注，用于 Prompt 注入"""
+    formatted = []
+    for i, chunk in enumerate(chunks, 1):
+        citation = chunk.get("citation", "")
+        paper_title = chunk.get("paper_title", "")
+        section = chunk.get("section_title", "")
+        header = f"--- 文献 {i}: {paper_title} {citation} | 章节: {section} ---"
+        formatted.append(f"{header}\n{chunk['text']}")
+    return "\n\n".join(formatted)
+
+
+def validate_citations(generated_text: str, retrieved_chunks: list[dict]) -> dict:
+    """校验生成文本中的引用是否都有检索依据"""
+    # 提取引用（英文 [Author et al., 2025] + 中文 [张明等, 2023]）
+    en_citations = re.findall(r'\[([A-Z][\w\s]+(?:et al\.)?,\s*\d{4})\]', generated_text)
+    zh_citations = re.findall(r'\[([\u4e00-\u9fff]+等?,\s*\d{4})\]', generated_text)
+    citations_in_text = en_citations + zh_citations
+
+    # 有效引用集合
+    valid_refs = set()
+    for c in retrieved_chunks:
+        meta = c.get("metadata", {})
+        authors = meta.get("authors", "")
+        year = meta.get("year", "")
+        if authors and year:
+            valid_refs.add(f"{authors}, {year}")
+
+    unverified = [c for c in citations_in_text if c not in valid_refs]
+
+    return {
+        "total_citations": len(citations_in_text),
+        "verified": len(citations_in_text) - len(unverified),
+        "unverified": unverified,
+        "verification_rate": (len(citations_in_text) - len(unverified)) / max(len(citations_in_text), 1)
+    }
