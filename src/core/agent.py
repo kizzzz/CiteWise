@@ -2,7 +2,6 @@
 import json
 import logging
 import re
-from typing import Optional
 
 from src.core.llm import llm_client
 from src.core.prompt import prompt_engine, SYSTEM_PROMPT_BASE
@@ -434,14 +433,21 @@ class CiteWiseAgent:
         if not project_id:
             return {"type": "text", "content": "请先创建项目并生成文章。", "intent": "modify"}
 
-        sections = self.pm.get_sections(project_id)
+        sections = self.pm.get_unique_sections(project_id)
         if not sections:
             return {"type": "text", "content": "还没有生成任何章节，无法修改。", "intent": "modify"}
 
-        self._think(f"定位修改目标：最后章节「{sections[-1]['section_name']}」")
+        # 匹配用户输入中提到的章节名，而非总是取最后一个
+        target_section = None
+        for s in sections:
+            if s["section_name"] in user_input:
+                target_section = s
+                break
+        if target_section is None:
+            target_section = sections[-1]
 
-        last_section = sections[-1]
-        target = last_section["content"]
+        self._think(f"定位修改目标：章节「{target_section['section_name']}」")
+        target = target_section["content"]
 
         chunks = hybrid_search(user_input, top_k=3)
         reference = format_chunks_with_citations(chunks) if chunks else ""
@@ -476,7 +482,7 @@ class CiteWiseAgent:
         if not project_id:
             return {"type": "text", "content": "请先创建项目。", "intent": "export"}
 
-        sections = self.pm.get_sections(project_id)
+        sections = self.pm.get_unique_sections(project_id)
         if not sections:
             return {"type": "text", "content": "还没有生成任何章节。", "intent": "export"}
 
@@ -557,94 +563,9 @@ class CiteWiseAgent:
     # --- 来源标注（程序化后处理） ---
 
     def _annotate_sources(self, content: str, rag_chunks: list[dict], web_results: list[dict]) -> str:
-        """程序化标注内容来源：📖 RAG文献 / 🌐 网络搜索 / 🧠 LLM推理
-
-        遍历每一段落，根据引用和关键词匹配判断来源类型，在段首添加标记。
-        """
-        if not content or not content.strip():
-            return content
-
-        # 1. 构建 RAG 引用匹配集合：收集所有 [作者, 年份] 格式
-        rag_citations = set()
-        for c in rag_chunks:
-            meta = c.get("metadata", {})
-            authors = meta.get("authors", "")
-            year = meta.get("year", "")
-            if authors and year:
-                rag_citations.add(f"{authors}, {year}")
-
-        # 2. 构建网络来源关键词集合（标题和 URL 的关键片段）
-        web_keywords = set()
-        web_urls = []
-        for r in web_results:
-            title = r.get("title", "")
-            if title:
-                # 提取标题中长度>=3的有意义的词
-                for word in re.findall(r'[\u4e00-\u9fff]{2,}|[a-zA-Z]{3,}', title):
-                    web_keywords.add(word.lower())
-            url = r.get("url", "")
-            if url:
-                web_urls.append(url)
-                # 提取域名作为关键词
-                domain_match = re.search(r'://([^/]+)', url)
-                if domain_match:
-                    web_keywords.add(domain_match.group(1).lower())
-
-        # 3. 按段落处理
-        paragraphs = content.split("\n")
-        annotated = []
-        source_stats = {"rag": 0, "web": 0, "llm": 0}
-
-        for para in paragraphs:
-            stripped = para.strip()
-
-            # 空行或纯标题行（#开头）不加标记，直接保留
-            if not stripped or stripped.startswith("#"):
-                annotated.append(para)
-                continue
-
-            # 判断该段落的来源
-            is_rag = False
-            is_web = False
-
-            # 检测 RAG 引用：[Author et al., 2025] 或 [张明等, 2023]
-            en_cites = re.findall(r'\[([A-Z][\w\s]+(?:et al\.)?,\s*\d{4})\]', stripped)
-            zh_cites = re.findall(r'\[([\u4e00-\u9fff]+等?,\s*\d{4})\]', stripped)
-            all_cites = en_cites + zh_cites
-
-            for cite in all_cites:
-                if cite in rag_citations:
-                    is_rag = True
-                    break
-
-            # 检测网络来源：URL 或标题关键词
-            if not is_rag and web_keywords:
-                # 检测段落中的 URL
-                for url in web_urls:
-                    if url and url in stripped:
-                        is_web = True
-                        break
-
-                # 检测标题关键词（至少匹配2个词，避免误判）
-                if not is_web:
-                    para_words = set(re.findall(r'[\u4e00-\u9fff]{2,}|[a-zA-Z]{3,}', stripped.lower()))
-                    overlap = para_words & web_keywords
-                    if len(overlap) >= 2:
-                        is_web = True
-
-            # 添加标记
-            if is_rag:
-                annotated.append(f"📖 {para}")
-                source_stats["rag"] += 1
-            elif is_web:
-                annotated.append(f"🌐 {para}")
-                source_stats["web"] += 1
-            else:
-                annotated.append(f"🧠 {para}")
-                source_stats["llm"] += 1
-
-        logger.info(f"[Annotate] 来源标注统计: RAG={source_stats['rag']}, Web={source_stats['web']}, LLM={source_stats['llm']}")
-        return "\n".join(annotated)
+        """程序化标注内容来源 — 委托给独立模块"""
+        from src.core.source_annotation import annotate_sources
+        return annotate_sources(content, rag_chunks, web_results)
 
     # --- 辅助方法 ---
 
@@ -717,13 +638,9 @@ class CiteWiseAgent:
         return header_row + "\n" + separator + "\n" + "\n".join(rows)
 
     def _summarize_section(self, content: str) -> str:
-        if len(content) < 200:
-            return content
-        messages = [
-            {"role": "system", "content": "将以下论文章节压缩为100字以内的简洁摘要，保留核心观点和关键引用。"},
-            {"role": "user", "content": content[:3000]},
-        ]
-        return self.llm.chat(messages, temperature=0.3, max_tokens=200)
+        """用 LLM 压缩章节 — 委托给独立模块"""
+        from src.core.source_annotation import summarize_section
+        return summarize_section(self.llm, content)
 
 
 # 全局单例

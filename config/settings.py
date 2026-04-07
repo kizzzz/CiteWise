@@ -1,28 +1,28 @@
 """CiteWise 配置文件"""
 import os
+from dotenv import load_dotenv
+
+# 加载 .env 文件（静默忽略缺失）
+load_dotenv(override=False)
 
 # === 项目根目录（自动检测）===
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # === LLM 配置（智谱 GLM）===
-# 优先级: Streamlit secrets > 环境变量
-def _get_secret(key: str, default: str = "") -> str:
-    """从 st.secrets 或环境变量获取配置"""
-    try:
-        import streamlit as st
-        if hasattr(st, 'secrets') and key in st.secrets:
-            return st.secrets[key]
-    except Exception:
-        pass
+# 优先级: 环境变量 > .env 文件
+def _get_config(key: str, default: str = "") -> str:
+    """从环境变量获取配置（.env 已由 load_dotenv 加载）"""
     return os.getenv(key, default)
 
-OPENAI_API_KEY = _get_secret("OPENAI_API_KEY", "")
-OPENAI_BASE_URL = _get_secret("OPENAI_BASE_URL", "https://open.bigmodel.cn/api/paas/v4/")
-LLM_MODEL = _get_secret("LLM_MODEL", "glm-4-flash")
+OPENAI_API_KEY = _get_config("OPENAI_API_KEY", "")
+if not OPENAI_API_KEY:
+    raise RuntimeError("OPENAI_API_KEY is required but not found in .env file or environment variables")
+OPENAI_BASE_URL = _get_config("OPENAI_BASE_URL", "https://open.bigmodel.cn/api/paas/v4/")
+LLM_MODEL = _get_config("LLM_MODEL", "glm-4.7")
 
 # === Embedding 配置（智谱）===
-EMBEDDING_MODEL = _get_secret("EMBEDDING_MODEL", "embedding-3")
-EMBEDDING_DIMENSION = int(os.getenv("EMBEDDING_DIMENSION", "2048"))
+EMBEDDING_MODEL = _get_config("EMBEDDING_MODEL", "embedding-3")
+EMBEDDING_DIMENSION = int(_get_config("EMBEDDING_DIMENSION", "2048"))
 
 # === 向量库配置 ===
 CHROMA_PATH = os.path.join(_PROJECT_ROOT, "data", "db", "chroma")
@@ -35,9 +35,10 @@ DB_PATH = os.path.join(DATA_DIR, "db", "citewise.db")
 PROFILE_PATH = os.path.join(DATA_DIR, "user_profile.json")
 
 # === 切片配置 ===
-CHUNK_MIN_SIZE = 200   # 最小 chunk 字符数
-CHUNK_MAX_SIZE = 1500  # 最大 chunk 字符数
-CHUNK_OVERLAP = 100    # 重叠字符数
+CHUNK_MIN_SIZE = 200           # 最小 chunk 字符数
+CHUNK_MAX_SIZE = 1500          # 最大 chunk 字符数
+CHUNK_TARGET_SIZE = 800        # 目标 chunk 大小（努力趋近）
+SENTENCE_OVERLAP_COUNT = 2     # 相邻 chunk 重叠的句子数
 
 # === 检索配置 ===
 VECTOR_TOP_K = 20

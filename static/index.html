@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-Content-Type-Options" content="nosniff">
+    <meta http-equiv="X-Frame-Options" content="DENY">
+    <title>CiteWise V3 — 智能研究助手</title>
+    <script src="https://cdn.tailwindcss.com/3.4.17" crossorigin="anonymous"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css" integrity="sha384-4Dmvoq4YsuE/FzTq0NxJ0HY6iJaSmQ8lPZGJlK7p9ALqhh3WFefMbFpy8dPKOSJ" crossorigin="anonymous">
+    <script src="https://unpkg.com/lucide@0.344.0/dist/umd/lucide.min.js" crossorigin="anonymous"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Dancing+Script:wght@700&family=Inter:wght@300;400;500;600;700&family=Playfair+Display:ital,wght@0,700;1,700&display=swap');
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f8fafc;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .brand-name {
+            font-family: 'Dancing Script', cursive;
+            font-size: 1.75rem;
+            background: linear-gradient(135deg, #1e293b 0%, #475569 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-left: 2px;
+        }
+
+        .gemini-logo {
+            position: relative;
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            filter: drop-shadow(0 2px 8px rgba(99, 102, 241, 0.3));
+        }
+
+        .sparkle-icon {
+            fill: url(#geminiGradient);
+            animation: pulse-gentle 3s ease-in-out infinite;
+        }
+
+        @keyframes pulse-gentle {
+            0%, 100% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.1); opacity: 0.8; }
+        }
+
+        .glass-sidebar {
+            background: rgba(255, 255, 255, 0.96);
+            backdrop-filter: blur(20px);
+            border-right: 1px solid #e2e8f0;
+        }
+
+        .view-section {
+            display: none;
+            height: 100%;
+        }
+
+        .view-section.active {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .chat-container {
+            height: calc(100vh - 160px);
+            overflow-y: auto;
+            scrollbar-width: thin;
+        }
+
+        /* 多源分层流式着色样式 */
+        .txt-kb { color: #2563eb; font-weight: 500; text-decoration: underline dotted #bfdbfe; text-underline-offset: 4px; cursor: pointer; }
+        .txt-kb:hover { background-color: #eff6ff; }
+        .txt-web { color: #16a34a; font-weight: 500; border-bottom: 1px solid #bbf7d0; }
+        .txt-ai { color: #7c3aed; }
+        .cite-sup { font-size: 0.65rem; vertical-align: super; margin-left: 2px; font-weight: 700; color: #3b82f6; opacity: 0.8; }
+
+        .nav-item.active {
+            background-color: #eff6ff;
+            color: #1d4ed8;
+        }
+
+        .dropdown-menu {
+            display: none;
+            position: absolute;
+            top: 100%;
+            left: 0;
+            width: 100%;
+            background: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1);
+            z-index: 50;
+        }
+        .dropdown-menu.show { display: block; }
+
+        .gemini-loading {
+            background: linear-gradient(90deg, #3b82f6, #8b5cf6, #3b82f6);
+            background-size: 200% auto;
+            animation: shine 2s linear infinite;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        @keyframes shine { to { background-position: 200% center; } }
+
+        .library-scroll, .paper-scroll, .sub-chat-scroll {
+            scrollbar-width: thin;
+            outline: none;
+        }
+
+        .field-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 12px;
+            background: #f1f5f9;
+            border: 1px solid #e2e8f0;
+            border-radius: 100px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: #475569;
+            transition: all 0.2s;
+            cursor: pointer;
+        }
+        .field-pill.active { background: #eff6ff; border-color: #3b82f6; color: #2563eb; }
+
+        .collab-step {
+            position: relative;
+            padding-left: 24px;
+            padding-bottom: 16px;
+            border-left: 2px solid #e2e8f0;
+            margin-left: 8px;
+        }
+        .collab-step::before {
+            content: '';
+            position: absolute;
+            left: -7px;
+            top: 0;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: white;
+            border: 2px solid #3b82f6;
+        }
+        .collab-step.completed::before { background: #3b82f6; }
+        .collab-step.active::before { border-color: #3b82f6; box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2); }
+
+        .sub-bubble {
+            max-width: 95%;
+            padding: 12px 16px;
+            border-radius: 18px;
+            font-size: 0.85rem;
+            line-height: 1.6;
+            margin-bottom: 16px;
+        }
+        .sub-bubble-ai { background: #ffffff; border: 1px solid #e2e8f0; color: #1e293b; border-bottom-left-radius: 4px; box-shadow: 0 2px 6px rgba(0,0,0,0.02); }
+        .sub-bubble-user { background: #3b82f6; color: white; border-bottom-right-radius: 4px; margin-left: auto; }
+
+        .modal-overlay {
+            background: rgba(15, 23, 42, 0.6);
+            backdrop-filter: blur(4px);
+        }
+
+        .academic-table th { background: #f8fafc; position: sticky; top: 0; z-index: 10; }
+
+        .toast {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 1000;
+            padding: 12px 24px;
+            border-radius: 12px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            animation: fadeInDown 0.3s ease;
+        }
+        .toast-success { background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }
+        .toast-error { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
+    </style>
+</head>
+<body class="flex">
+
+    <!-- SVG Gradient Defs -->
+    <svg width="0" height="0" style="position:absolute;">
+        <defs>
+            <linearGradient id="geminiGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" style="stop-color:#6366f1;stop-opacity:1" />
+                <stop offset="50%" style="stop-color:#a855f7;stop-opacity:1" />
+                <stop offset="100%" style="stop-color:#3b82f6;stop-opacity:1" />
+            </linearGradient>
+        </defs>
+    </svg>
+
+    <!-- Sidebar -->
+    <aside class="w-72 glass-sidebar flex flex-col h-full z-10 shadow-xl">
+        <div class="p-6 flex-1 overflow-y-auto library-scroll">
+            <div class="flex items-center gap-2 mb-10 group cursor-default">
+                <div class="gemini-logo">
+                    <svg viewBox="0 0 24 24" class="sparkle-icon" width="28" height="28">
+                        <path d="M12 0L14.59 9.41L24 12L14.59 14.59L12 24L9.41 14.59L0 12L9.41 9.41L12 0Z" />
+                    </svg>
+                </div>
+                <h1 class="brand-name">CiteWise</h1>
+            </div>
+
+            <div class="space-y-8">
+                <!-- 导航 -->
+                <div class="space-y-1">
+                    <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 block ml-1">学术核心</label>
+                    <button id="navChat" onclick="switchView('chatView', this)" class="nav-item active w-full flex items-center gap-3 p-3 rounded-xl text-sm font-semibold transition-all text-left">
+                        <i data-lucide="sparkles" class="w-4 h-4 text-indigo-500"></i> 协同中心
+                    </button>
+                    <button id="navPaper" onclick="switchView('paperView', this)" class="nav-item w-full flex items-center gap-3 p-3 text-slate-600 hover:bg-slate-100 rounded-xl text-sm font-semibold transition-all text-left">
+                        <i data-lucide="file-text" class="w-4 h-4"></i> 文献索引
+                    </button>
+                    <button id="navDraft" onclick="switchView('draftView', this)" class="nav-item w-full flex items-center gap-3 p-3 text-slate-600 hover:bg-slate-100 rounded-xl text-sm font-semibold transition-all text-left">
+                        <i data-lucide="layers" class="w-4 h-4"></i> 章节草稿
+                    </button>
+                </div>
+
+                <!-- 研究资产 -->
+                <div class="space-y-1">
+                    <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 block ml-1">研究资产</label>
+                    <button id="navSkill" onclick="switchView('skillView', this)" class="nav-item w-full flex items-center gap-3 p-3 text-slate-600 hover:bg-slate-100 rounded-xl text-sm font-semibold transition-all text-left text-amber-500">
+                        <i data-lucide="zap" class="w-4 h-4"></i> Skill 集
+                    </button>
+                    <button id="navTool" onclick="switchView('toolView', this)" class="nav-item w-full flex items-center gap-3 p-3 text-slate-600 hover:bg-slate-100 rounded-xl text-sm font-semibold transition-all text-left text-blue-500">
+                        <i data-lucide="hammer" class="w-4 h-4"></i> 工具箱
+                    </button>
+                    <button id="navEval" onclick="switchView('evalView', this); loadEvalDashboard()" class="nav-item w-full flex items-center gap-3 p-3 text-slate-600 hover:bg-slate-100 rounded-xl text-sm font-semibold transition-all text-left text-emerald-500">
+                        <i data-lucide="activity" class="w-4 h-4"></i> AgentEval
+                    </button>
+                </div>
+
+                <!-- 当前项目 -->
+                <div class="relative pt-4 border-t border-slate-100">
+                    <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 block ml-1">当前项目</label>
+                    <div onclick="toggleDropdown('projectDropdown', event)" class="mt-2 bg-white border border-slate-200 rounded-xl p-3 flex items-center justify-between cursor-pointer hover:border-blue-400 transition-all shadow-sm">
+                        <span id="currentProjectName" class="text-sm font-semibold text-slate-700 truncate">选择项目...</span>
+                        <i data-lucide="chevron-down" class="w-4 h-4 text-slate-400"></i>
+                    </div>
+                    <div id="projectDropdown" class="dropdown-menu mt-2 p-1">
+                        <div id="projectListContainer" class="max-h-48 overflow-y-auto"></div>
+                        <div class="border-t border-slate-100 my-1"></div>
+                        <div onclick="toggleModal('newProjectModal')" class="p-2.5 text-sm text-blue-600 font-bold hover:bg-blue-50 rounded-md cursor-pointer flex items-center gap-2">
+                            <i data-lucide="plus-circle" class="w-4 h-4"></i> 新建研究项目
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 项目进度 -->
+        <div class="p-6 border-t border-slate-100 space-y-4 bg-slate-50/50">
+            <div class="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
+                <div class="flex justify-between items-center mb-2 text-[10px] font-bold uppercase">
+                    <span class="text-slate-500">共建项目记忆</span>
+                    <span id="progressPercent" class="text-blue-600">0%</span>
+                </div>
+                <div class="w-full bg-slate-100 rounded-full h-1.5 overflow-hidden">
+                    <div id="globalProgressBar" class="bg-blue-600 h-1.5 rounded-full transition-all duration-700" style="width: 0%"></div>
+                </div>
+            </div>
+        </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="flex-1 flex flex-col relative overflow-hidden">
+
+        <!-- View 1: Chat -->
+        <section id="chatView" class="view-section active">
+            <header class="h-16 border-b border-slate-200 bg-white/50 backdrop-blur-md flex items-center justify-between px-8">
+                <div class="flex items-center gap-4">
+                    <h2 class="font-bold text-slate-800">多 Agent 协同中心</h2>
+                </div>
+                <div class="flex items-center gap-4 text-xs font-medium">
+                    <div class="flex items-center gap-3 text-slate-400">
+                        <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-blue-500"></span>文献专家</span>
+                        <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-green-500"></span>联网搜索</span>
+                        <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-purple-500"></span>模型推理</span>
+                    </div>
+                    <button onclick="toggleModal('summaryModal')" class="flex items-center gap-2 px-3 py-2 bg-white border border-slate-200 rounded-lg font-bold text-slate-700 hover:border-blue-500 transition-all">
+                        <i data-lucide="table" class="w-4 h-4"></i> 提取矩阵
+                    </button>
+                </div>
+            </header>
+
+            <div id="chatWindow" class="flex-1 chat-container p-10 space-y-10">
+                <div id="dynamicChatContent">
+                    <div class="flex gap-4 mb-8">
+                        <div class="w-10 h-10 rounded-xl bg-slate-900 flex items-center justify-center text-white shadow-xl">
+                            <i data-lucide="cpu"></i>
+                        </div>
+                        <div class="max-w-[80%] bg-white border border-slate-200 p-6 rounded-3xl rounded-tl-none shadow-sm space-y-4">
+                            <p class="text-slate-700 leading-relaxed text-sm">
+                                CiteWise V3 协同系统已就绪。我将自动调度 Agent 为您服务。您可以尝试询问："总结当前文献中关于 Transformer 的应用趋势，并补充最新的联网进展。"
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="h-24 px-8 flex items-center bg-white border-t border-slate-200 shadow-[0_-4px_12px_rgba(0,0,0,0.02)]">
+                <div class="w-full max-w-5xl mx-auto relative flex items-center">
+                    <div class="absolute left-4 z-10 flex items-center gap-2">
+                        <span class="px-2 py-1 bg-indigo-50 text-indigo-600 rounded-md text-[10px] font-bold border border-indigo-100 uppercase">Multi-Agent</span>
+                    </div>
+                    <input id="chatInput" type="text" placeholder="描述您的学术研究任务..." class="w-full bg-slate-100/80 border border-slate-200 rounded-2xl py-4 pl-28 pr-36 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
+                    <div class="absolute right-2 top-1/2 -translate-y-1/2">
+                        <button onclick="handleSendChat()" id="sendBtn" class="bg-indigo-600 text-white px-5 py-2.5 rounded-xl hover:bg-indigo-700 shadow-md transition-all active:scale-95 flex items-center gap-2">
+                            <span class="text-xs font-bold">学术调度</span>
+                            <i data-lucide="zap" class="w-4 h-4"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- View: Paper Management -->
+        <section id="paperView" class="view-section">
+            <div id="paperListView" class="flex flex-col h-full">
+                <header class="h-16 border-b border-slate-200 bg-white flex items-center justify-between px-8">
+                    <h2 class="font-bold text-slate-800">文献管理</h2>
+                    <label class="bg-blue-600 text-white px-4 py-2 rounded-lg text-xs font-bold hover:bg-blue-700 transition-all flex items-center gap-2 cursor-pointer">
+                        <i data-lucide="upload-cloud" class="w-4 h-4"></i> 上传文献
+                        <input type="file" id="paperUpload" accept=".pdf" multiple class="hidden" onchange="handleUploadPapers()">
+                    </label>
+                </header>
+                <div class="p-8 space-y-6 flex-1 overflow-auto">
+                    <div id="uploadProgress" class="hidden bg-white border border-blue-100 rounded-2xl p-4 flex items-center gap-4 animate__animated animate__fadeIn">
+                        <i data-lucide="file" class="text-blue-600"></i>
+                        <div class="flex-1">
+                            <div class="flex justify-between mb-1">
+                                <span class="text-xs font-bold text-blue-600">正在解析...</span>
+                                <span class="text-xs font-bold text-blue-600" id="progressText">0%</span>
+                            </div>
+                            <div class="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
+                                <div id="progressBar" class="bg-blue-600 h-full transition-all duration-300" style="width: 0%"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="paperListContainer" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"></div>
+                </div>
+            </div>
+            <!-- Paper Detail -->
+            <div id="paperDetailView" class="hidden flex flex-col h-full animate__animated animate__fadeIn">
+                <header class="h-16 border-b border-slate-200 bg-white flex items-center justify-between px-8">
+                    <div class="flex items-center gap-4">
+                        <button onclick="closePaperDetail()" class="p-2 hover:bg-slate-100 rounded-lg text-slate-500">
+                            <i data-lucide="arrow-left" class="w-5 h-5"></i>
+                        </button>
+                        <h3 id="detailPaperTitle" class="text-sm font-bold text-slate-800">文献详情</h3>
+                    </div>
+                </header>
+                <div class="flex-1 p-12 overflow-y-auto paper-scroll bg-white">
+                    <div class="max-w-3xl mx-auto space-y-8">
+                        <h1 id="detailPaperDisplayTitle" class="text-3xl font-extrabold text-slate-900 leading-tight">标题</h1>
+                        <p id="detailPaperAuthors" class="text-slate-500 font-medium">作者</p>
+                        <div class="prose prose-slate max-w-none text-slate-700 leading-relaxed space-y-4">
+                            <p class="font-bold text-xl">Abstract</p>
+                            <p id="abstractContent">正在召回结构化内容...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- View: Draft Management -->
+        <section id="draftView" class="view-section">
+            <div id="draftListView" class="flex flex-col h-full">
+                <header class="h-16 border-b border-slate-200 bg-white flex items-center justify-between px-8">
+                    <h2 class="font-bold text-slate-800">章节管理</h2>
+                    <button onclick="toggleModal('newDraftModal')" class="bg-blue-600 text-white px-4 py-2 rounded-lg text-xs font-bold">新建章节</button>
+                </header>
+                <div id="draftList" class="p-8 grid grid-cols-2 gap-6 overflow-y-auto"></div>
+            </div>
+            <!-- Editor View -->
+            <div id="draftEditor" class="hidden h-full flex flex-col animate__animated animate__fadeIn">
+                <header class="h-16 border-b border-slate-200 bg-white flex items-center justify-between px-8">
+                    <div class="flex items-center gap-4">
+                        <button onclick="closeDraftEditor()" class="p-2 hover:bg-slate-100 rounded-lg text-slate-500">
+                            <i data-lucide="arrow-left" class="w-5 h-5"></i>
+                        </button>
+                        <h3 id="editorTitle" class="text-sm font-bold text-slate-800">编辑</h3>
+                    </div>
+                    <div class="flex gap-2">
+                        <button onclick="smartExpand()" class="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-bold hover:bg-blue-700 shadow-md">智能续写</button>
+                    </div>
+                </header>
+                <div class="flex-1 flex overflow-hidden">
+                    <div class="flex-1 p-12 overflow-y-auto paper-scroll bg-white">
+                        <div id="editableArea" contenteditable="true" class="max-w-3xl mx-auto text-slate-700 leading-loose text-lg outline-none min-h-full"></div>
+                    </div>
+                    <div class="w-96 border-l border-slate-200 bg-slate-50/50 flex flex-col">
+                        <div id="subChatWindow" class="flex-1 p-4 overflow-y-auto sub-chat-scroll space-y-4"></div>
+                        <div class="p-4 bg-white border-t border-slate-200">
+                            <div class="relative">
+                                <textarea id="subInput" rows="2" placeholder="指令修稿..." class="w-full bg-slate-100 border-none rounded-xl p-3 text-xs focus:ring-2 focus:ring-blue-500 resize-none outline-none"></textarea>
+                                <button onclick="handleSendSubChat()" class="absolute right-2 bottom-2 p-2 bg-blue-600 text-white rounded-lg">
+                                    <i data-lucide="send" class="w-3.5 h-3.5"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- View: Skill -->
+        <section id="skillView" class="view-section">
+            <header class="h-16 border-b border-slate-200 bg-white px-8 flex items-center"><h2 class="font-bold text-slate-800">Skill 库</h2></header>
+            <div id="skillListContainer" class="p-8 grid grid-cols-3 gap-6 overflow-y-auto"></div>
+        </section>
+
+        <!-- View: Tool -->
+        <section id="toolView" class="view-section">
+            <header class="h-16 border-b border-slate-200 bg-white px-8 flex items-center"><h2 class="font-bold text-slate-800">工具箱</h2></header>
+            <div id="toolListContainer" class="p-8 grid grid-cols-3 gap-6 overflow-y-auto"></div>
+        </section>
+
+        <!-- View: AgentEval Dashboard -->
+        <section id="evalView" class="view-section">
+            <header class="h-16 border-b border-slate-200 bg-white flex items-center justify-between px-8">
+                <div class="flex items-center gap-4">
+                    <h2 class="font-bold text-slate-800">AgentEval 评估面板</h2>
+                    <span class="text-[10px] font-bold text-emerald-600 bg-emerald-50 border border-emerald-100 px-2 py-1 rounded-md uppercase">5 大核心指标</span>
+                </div>
+                <div class="flex items-center gap-2">
+                    <select id="evalDaysSelect" onchange="loadEvalDashboard()" class="border border-slate-200 rounded-lg px-3 py-1.5 text-xs font-semibold text-slate-600 focus:ring-2 focus:ring-blue-500 outline-none">
+                        <option value="7">近 7 天</option>
+                        <option value="14">近 14 天</option>
+                        <option value="30">近 30 天</option>
+                    </select>
+                    <button onclick="loadEvalDashboard()" class="p-2 hover:bg-slate-100 rounded-lg text-slate-500 transition-all">
+                        <i data-lucide="refresh-cw" class="w-4 h-4"></i>
+                    </button>
+                </div>
+            </header>
+            <div class="flex-1 overflow-y-auto p-8 space-y-8">
+                <!-- Metric Cards -->
+                <div id="evalMetricsGrid" class="grid grid-cols-5 gap-5">
+                    <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                        <div class="flex items-center gap-2 mb-3">
+                            <div class="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center"><i data-lucide="check-circle" class="w-4 h-4 text-blue-600"></i></div>
+                            <span class="text-[10px] font-bold text-slate-400 uppercase">任务成功率</span>
+                        </div>
+                        <div class="text-3xl font-extrabold text-slate-900" id="metricSuccessRate">--</div>
+                        <div class="text-xs text-slate-400 mt-1"><span id="metricSuccessCount">0</span> / <span id="metricTotal">0</span> 成功</div>
+                    </div>
+                    <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                        <div class="flex items-center gap-2 mb-3">
+                            <div class="w-8 h-8 rounded-lg bg-emerald-50 flex items-center justify-center"><i data-lucide="target" class="w-4 h-4 text-emerald-600"></i></div>
+                            <span class="text-[10px] font-bold text-slate-400 uppercase">引用准确率</span>
+                        </div>
+                        <div class="text-3xl font-extrabold text-slate-900" id="metricAccuracy">--</div>
+                        <div class="text-xs text-slate-400 mt-1">平均准确度</div>
+                    </div>
+                    <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                        <div class="flex items-center gap-2 mb-3">
+                            <div class="w-8 h-8 rounded-lg bg-red-50 flex items-center justify-center"><i data-lucide="alert-triangle" class="w-4 h-4 text-red-500"></i></div>
+                            <span class="text-[10px] font-bold text-slate-400 uppercase">幻觉率</span>
+                        </div>
+                        <div class="text-3xl font-extrabold text-slate-900" id="metricHallucRate">--</div>
+                        <div class="text-xs text-slate-400 mt-1"><span id="metricHallucCount">0</span> 次标记</div>
+                    </div>
+                    <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                        <div class="flex items-center gap-2 mb-3">
+                            <div class="w-8 h-8 rounded-lg bg-amber-50 flex items-center justify-center"><i data-lucide="clock" class="w-4 h-4 text-amber-600"></i></div>
+                            <span class="text-[10px] font-bold text-slate-400 uppercase">响应时间</span>
+                        </div>
+                        <div class="text-3xl font-extrabold text-slate-900" id="metricResponseTime">--</div>
+                        <div class="text-xs text-slate-400 mt-1">平均毫秒</div>
+                    </div>
+                    <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                        <div class="flex items-center gap-2 mb-3">
+                            <div class="w-8 h-8 rounded-lg bg-purple-50 flex items-center justify-center"><i data-lucide="coins" class="w-4 h-4 text-purple-600"></i></div>
+                            <span class="text-[10px] font-bold text-slate-400 uppercase">调用成本</span>
+                        </div>
+                        <div class="text-3xl font-extrabold text-slate-900" id="metricCost">--</div>
+                        <div class="text-xs text-slate-400 mt-1">总计 <span id="metricTotalCost">0</span></div>
+                    </div>
+                </div>
+
+                <!-- Trend Chart + Suggestions -->
+                <div class="grid grid-cols-3 gap-6">
+                    <!-- Trend -->
+                    <div class="col-span-2 bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
+                        <h3 class="text-sm font-bold text-slate-800 mb-4">每日趋势</h3>
+                        <div id="evalTrendChart" class="h-48 flex items-end gap-1"></div>
+                        <div class="flex justify-between mt-2 text-[10px] text-slate-400 font-medium">
+                            <span id="trendDateStart">-</span>
+                            <span id="trendDateEnd">-</span>
+                        </div>
+                    </div>
+                    <!-- Suggestions -->
+                    <div class="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
+                        <h3 class="text-sm font-bold text-slate-800 mb-4">自动优化建议</h3>
+                        <div id="evalSuggestions" class="space-y-3 text-sm">
+                            <div class="text-slate-400 text-center py-8">加载中...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Extraction Modal -->
+        <div id="summaryModal" class="hidden absolute inset-0 z-50 flex items-center justify-center modal-overlay p-4 text-sm">
+            <div class="bg-white w-full max-w-5xl h-[85vh] rounded-3xl shadow-2xl overflow-hidden flex flex-col">
+                <div class="p-6 border-b border-slate-100 flex justify-between bg-slate-50 items-center">
+                    <h3 class="text-lg font-bold">结构化比对矩阵</h3>
+                    <button onclick="toggleModal('summaryModal')"><i data-lucide="x"></i></button>
+                </div>
+                <div class="flex-1 overflow-hidden flex flex-col">
+                    <div id="extractionConfigView" class="p-8 flex-1 overflow-y-auto text-center space-y-6">
+                        <div id="fieldContainer" class="flex flex-wrap gap-2 justify-center"></div>
+                        <div class="max-w-md mx-auto flex gap-2">
+                            <input id="newFieldInput" type="text" placeholder="新增维度..." class="flex-1 border p-3 rounded-xl outline-none focus:ring-2 focus:ring-blue-500">
+                            <button onclick="addField()" class="bg-slate-100 px-4 rounded-xl font-bold">添加</button>
+                        </div>
+                        <button onclick="runExtraction()" class="w-full max-w-md py-4 bg-indigo-600 text-white rounded-xl font-bold shadow-lg hover:bg-indigo-700">启动并行协作提取</button>
+                    </div>
+                    <div id="extractionResultView" class="hidden flex-1 flex flex-col overflow-hidden">
+                        <div id="extractionLoader" class="flex-1 flex flex-col items-center justify-center py-20 bg-slate-50/30">
+                            <i data-lucide="loader-2" class="animate-spin text-blue-600 w-12 h-12 mb-4"></i>
+                            <p class="text-sm font-bold">Agent 正在跨文献执行多维提取与对齐...</p>
+                        </div>
+                        <div id="extractionResultContent" class="hidden flex-1 flex flex-col overflow-hidden">
+                            <div class="flex-1 overflow-auto p-8 paper-scroll">
+                                <table class="academic-table w-full text-left border-collapse bg-white rounded-xl shadow-sm border border-slate-200">
+                                    <thead id="extractionTableHead"></thead>
+                                    <tbody id="extractionTableBody"></tbody>
+                                </table>
+                            </div>
+                            <div class="p-6 bg-slate-50 border-t flex justify-end gap-3">
+                                <button onclick="exportExtraction()" class="px-6 py-2 bg-green-600 text-white rounded-xl font-bold">导出 Excel</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Create Draft Modal -->
+        <div id="newDraftModal" class="hidden absolute inset-0 z-50 flex items-center justify-center modal-overlay p-4">
+            <div class="bg-white w-full max-w-md rounded-3xl shadow-2xl p-8 space-y-4 animate__animated animate__zoomIn">
+                <h3 class="text-xl font-bold">新增章节</h3>
+                <input id="newDraftTitle" type="text" placeholder="标题" class="w-full border p-3 rounded-xl">
+                <button onclick="confirmCreateDraft()" class="w-full py-4 bg-blue-600 text-white rounded-2xl font-bold">创建并生成</button>
+            </div>
+        </div>
+
+        <!-- Create Project Modal -->
+        <div id="newProjectModal" class="hidden absolute inset-0 z-50 flex items-center justify-center modal-overlay p-4">
+            <div class="bg-white w-full max-w-md rounded-3xl shadow-2xl p-8 space-y-4 animate__animated animate__zoomIn">
+                <h3 class="text-xl font-bold">新建项目</h3>
+                <input id="newProjectTitle" type="text" placeholder="项目名称" class="w-full border p-3 rounded-xl">
+                <input id="newProjectTopic" type="text" placeholder="研究主题" class="w-full border p-3 rounded-xl">
+                <button onclick="confirmCreateProject()" class="w-full py-4 bg-blue-600 text-white rounded-2xl font-bold">创建</button>
+            </div>
+        </div>
+
+    </main>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

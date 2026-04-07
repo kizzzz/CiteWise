@@ -1,10 +1,10 @@
-"""CiteWise — 智能研究助手 | 主对话 + 子对话体系"""
+"""CiteWise V2 — 智能研究助手 | 多 Agent 协同 + 语义切块 + 图表索引"""
 import sys
 import os
 import io
-import time
 import logging
 import re
+import html
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -17,251 +17,35 @@ from src.core.embedding import vector_store
 from src.core.retriever import bm25_index, hybrid_search
 from src.core.memory import global_profile, project_memory, working_memory
 from src.core.agent import agent, route_intent
+from src.core.agents.coordinator import coordinator
 from src.core.llm import llm_client
+
+from ui.styles import STYLES, SOURCE_LEGEND
+from ui.chat import render_msg, render_thinking, render_annotated_content, render_citation_badge, render_citations_panel
+from ui.figures import render_figures_panel
+from ui.insights import render_insights_panel
+from ui.config_panel import render_config_panel, render_batch_generate_button
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ========== 页面配置 ==========
-st.set_page_config(page_title="CiteWise", page_icon="📚", layout="wide")
+# Context window constants
+MAIN_HISTORY_WINDOW = 6
+CONTENT_SNIPPET_LENGTH = 150
+MAIN_CONTEXT_BUDGET = 800
+SUB_CONTEXT_BUDGET = 600
+SECTION_CONTENT_BUDGET = 3000
 
-# ========== CSS ==========
-st.markdown("""<style>
-.source-rag{background:linear-gradient(90deg,#dbeafe,#eff6ff);border-left:3px solid #3b82f6;padding:6px 12px;margin:4px 0;border-radius:0 6px 6px 0}
-.source-web{background:linear-gradient(90deg,#dcfce7,#f0fdf4);border-left:3px solid #22c55e;padding:6px 12px;margin:4px 0;border-radius:0 6px 6px 0}
-.source-llm{background:linear-gradient(90deg,#f3e8ff,#faf5ff);border-left:3px solid #a855f7;padding:6px 12px;margin:4px 0;border-radius:0 6px 6px 0}
-.thinking-step{color:#6b7280;font-size:.85em;padding:2px 0}
-</style>
-""", unsafe_allow_html=True)
+# ========== 页面配置 ==========
+st.set_page_config(page_title="CiteWise V2", page_icon="📚", layout="wide")
+st.markdown(STYLES, unsafe_allow_html=True)
 
 
 # ==================== 辅助函数 ====================
 
-def _render_thinking(steps):
-    if not steps:
-        return
-    with st.expander("💭 思考过程", expanded=False):
-        for i, s in enumerate(steps, 1):
-            st.markdown(f'<p class="thinking-step">{i}. {s}</p>', unsafe_allow_html=True)
-
-
-def _render_annotated_content(content: str):
-    """渲染带来源标注的内容（三色块）"""
-    if not content or not isinstance(content, str):
-        st.write(content)
-        return
-
-    parts = re.split(r'\n(?=📖|🌐|🧠)', content)
-    has_annotation = any(p.strip().startswith(('📖', '🌐', '🧠')) for p in parts)
-
-    if not has_annotation:
-        st.markdown(content)
-        return
-
-    for part in parts:
-        part = part.strip()
-        if not part:
-            continue
-        body = part[1:].strip() if len(part) > 1 else ""
-        # 用 text=True 避免 markdown 解析问题
-        if part.startswith("📖"):
-            st.markdown(f'<div class="source-rag"><b>📖 知识库文献</b></div>', unsafe_allow_html=True)
-            st.markdown(body)
-        elif part.startswith("🌐"):
-            st.markdown(f'<div class="source-web"><b>🌐 联网搜索</b></div>', unsafe_allow_html=True)
-            st.markdown(body)
-        elif part.startswith("🧠"):
-            st.markdown(f'<div class="source-llm"><b>🧠 大模型推理</b></div>', unsafe_allow_html=True)
-            st.markdown(body)
-        else:
-            st.markdown(part)
-
-
-def _render_citations_panel(content, sources):
-    """渲染引用来源面板"""
-    if not sources or not isinstance(content, str):
-        return
-    en = re.findall(r'\[([A-Z][\w\s]+(?:et al\.)?,\s*\d{4})\]', content)
-    zh = re.findall(r'\[([\u4e00-\u9fff]+等?,\s*\d{4})\]', content)
-    cites = list(set(en + zh))
-    label = f"📎 引用来源 ({max(len(cites), len(sources))} 条)"
-    with st.expander(label):
-        if cites:
-            for c in cites:
-                m = [s for s in sources if c.lower() in s.get("citation", "").lower()]
-                st.markdown(f"- **{c}** — {m[0].get('title','')}" if m else f"- {c}")
-        else:
-            for s in sources:
-                st.markdown(f"- **{s.get('title','')}** {s.get('citation','')}")
-
-
-def _render_citation_badge(check):
-    if not check:
-        return
-    r, t, v = check.get("verification_rate", 0), check.get("total_citations", 0), check.get("verified", 0)
-    if r >= 0.9:
-        st.success(f"引用校验: {v}/{t} ({r:.0%})")
-    elif r >= 0.7:
-        st.warning(f"引用校验: {v}/{t} ({r:.0%})")
-    else:
-        st.error(f"引用校验: {v}/{t} ({r:.0%})")
-    if check.get("unverified"):
-        with st.expander("未验证"):
-            for c in check["unverified"]:
-                st.write(f"- {c}")
-
-
-def _render_msg(msg):
-    """渲染单条消息"""
-    content = msg.get("content", "")
-    msg_type = msg.get("type", "text")
-    if msg.get("thinking_steps"):
-        _render_thinking(msg["thinking_steps"])
-    if not isinstance(content, str):
-        if isinstance(content, dict):
-            _render_framework(content)
-            return
-        content = str(content)
-    if msg_type == "table":
-        st.markdown("### 📊 结构化对比表格")
-        st.markdown(content)
-    elif msg_type == "section":
-        st.markdown(content)
-        if msg.get("citations"):
-            _render_citation_badge(msg["citations"])
-    elif msg_type == "framework":
-        _render_framework(content)
-    else:
-        _render_annotated_content(content)
-    _render_citations_panel(content, msg.get("sources"))
-
-
-def _render_framework(fw):
-    if isinstance(fw, str):
-        st.markdown(fw); return
-    if not isinstance(fw, dict):
-        st.write(fw); return
-    for i, s in enumerate(fw.get("framework", []), 1):
-        st.markdown(f"**{i}. {s.get('section','')}**")
-        st.caption(f"目标: {s.get('goal','')} | 建议字数: {s.get('suggested_words',1000)}")
-        for p in s.get("key_points", []):
-            st.write(f"  - {p}")
-    if fw.get("insights"):
-        st.markdown("**关键洞察：**")
-        for ins in fw["insights"]:
-            st.write(f"  - {ins}")
-
-
-def _process_uploads(uploaded_files):
-    progress = st.progress(0, text="解析中...")
-    all_chunks, total = [], len(uploaded_files)
-    for i, f in enumerate(uploaded_files):
-        progress.progress(i / total, text=f"解析 {f.name} ({i+1}/{total})")
-        path = os.path.join(PAPERS_DIR, f.name)
-        with open(path, "wb") as fp:
-            fp.write(f.getbuffer())
-        data = parse_pdf(path)
-        chunks = chunk_paper(data)
-        project_memory.add_paper(data["paper_id"], st.session_state.project_id,
-                                 data.get("title", f.name), data.get("authors",""),
-                                 data.get("year",0), f.name, len(chunks))
-        all_chunks.extend(chunks)
-    progress.progress(0.7, text="向量化中...")
-    vector_store.index_chunks(all_chunks)
-    bm25_index.build_index(vector_store.get_all_chunks())
-    progress.progress(1.0, text="完成!")
-    st.success(f"已解析 {total} 篇论文，{len(all_chunks)} 个片段已入库")
-    st.session_state.main_chat.append({"role":"assistant",
-        "content":f"已入库 {total} 篇论文。你可以在主对话提问，或生成章节后进入子对话。","type":"text"})
-    time.sleep(0.3)
-    st.rerun()
-
-
-def _do_structured_summary(pid, fields):
-    """结构化总结 — 注意：不使用 expander/tab 嵌套，直接在主区域渲染"""
-    from src.core.retriever import format_chunks_with_citations
-    from src.core.prompt import prompt_engine, SYSTEM_PROMPT_BASE
-    papers = project_memory.get_papers(pid)
-    if not papers:
-        st.error("没有论文"); return
-
-    prog = st.progress(0, text="提取中...")
-    results = []
-    for idx, p in enumerate(papers[:10]):
-        prog.progress((idx+1)/min(len(papers),10), text=f"提取 {p['title'][:35]}...")
-        chunks = hybrid_search(", ".join(fields), top_k=5, where={"paper_id": p["id"]})
-        if not chunks:
-            continue
-        txt = format_chunks_with_citations(chunks)
-        ext = llm_client.chat_json([{"role":"system","content":SYSTEM_PROMPT_BASE},
-            {"role":"user","content":prompt_engine.build_extract_prompt(fields, txt)}], temperature=0.3)
-        if "fields" in ext:
-            project_memory.save_extraction(pid, p["id"], "自定义", ext.get("fields",{}), ext.get("confidence",{}))
-            results.append({"paper_title":p["title"],"authors":p["authors"],"year":p.get("year",""),**ext.get("fields",{})})
-    prog.empty()
-
-    if not results:
-        st.warning("提取失败"); return
-
-    # 存入 session_state，不在此处渲染 UI，等下次 rerun 后在主区域渲染
-    st.session_state._summary_result = results
-    st.session_state._summary_fields = fields
-    st.session_state.main_chat.append({"role":"assistant","content":"结构化总结完成","type":"text"})
-    st.rerun()
-
-
-def _render_summary_results():
-    """渲染结构化总结结果（从 session_state 读取，避免嵌套容器问题）"""
-    results = st.session_state.get("_summary_result")
-    fields = st.session_state.get("_summary_fields")
-    if not results:
-        return
-
-    st.markdown("### 📊 结构化对比表格")
-    df = pd.DataFrame(results)
-    st.dataframe(df, use_container_width=True)
-
-    # Excel 导出
-    buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="结构化总结")
-    buf.seek(0)
-    st.download_button("📥 下载 Excel", buf.getvalue(), "structured_summary.xlsx",
-                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-    # 可视化图表
-    st.markdown("### 📈 可视化图表")
-    chart_fields = [f for f in fields if f in df.columns]
-    if chart_fields:
-        col1, col2 = st.columns(2)
-        with col1:
-            sel = st.selectbox("选择字段", chart_fields, key="chart_sel")
-            if sel:
-                counts = df[sel].value_counts()
-                st.markdown(f"**{sel}** 分布")
-                chart_data = pd.DataFrame({"label": counts.index.astype(str), "count": counts.values})
-                st.bar_chart(chart_data.set_index("label"))
-        with col2:
-            st.markdown("**论文年份分布**")
-            if "year" in df.columns:
-                year_counts = df["year"].value_counts().sort_index()
-                yc = pd.DataFrame({"year": year_counts.index.astype(str), "count": year_counts.values})
-                st.bar_chart(yc.set_index("year"))
-            else:
-                st.info("无年份数据")
-
-
-def _export_document():
-    if not st.session_state.project_id:
-        return
-    r = agent._handle_export("")
-    if r.get("content"):
-        st.download_button("下载 Markdown", r["content"], "research_paper.md", "text/markdown")
-
-
 def _handle_agent_result(result):
-    """统一的 agent 结果渲染（在 chat_message assistant 上下文中调用）"""
-    _render_thinking(result.get("thinking_steps", []))
+    """统一的 agent 结果渲染"""
+    render_thinking(result.get("thinking_steps", []))
     rtype = result.get("type", "text")
     content = result.get("content", "")
 
@@ -269,23 +53,22 @@ def _handle_agent_result(result):
         st.markdown("### 📊 对比表格")
         st.markdown(content)
     elif rtype == "framework":
+        from ui.chat import _render_framework
         _render_framework(content)
     elif rtype == "export":
         st.download_button("下载", content, "research_paper.md", "text/markdown")
     elif rtype == "section":
-        _render_annotated_content(content)
+        render_annotated_content(content)
         if result.get("citations"):
-            _render_citation_badge(result["citations"])
+            render_citation_badge(result["citations"])
     else:
-        _render_annotated_content(content)
+        render_annotated_content(content)
 
-    _render_citations_panel(content if isinstance(content, str) else "", result.get("sources"))
-
+    render_citations_panel(content if isinstance(content, str) else "", result.get("sources"))
     return rtype
 
 
 def _save_to_history(target_list, result):
-    """保存结果到对话历史"""
     target_list.append({
         "role": "assistant",
         "content": result.get("content", ""),
@@ -293,30 +76,26 @@ def _save_to_history(target_list, result):
         "citations": result.get("citations"),
         "sources": result.get("sources"),
         "thinking_steps": result.get("thinking_steps", []),
-        "content_sources": result.get("content_sources"),
         "section_name": result.get("section_name"),
     })
 
 
 def _register_section(result):
-    """注册新生成的章节到 session state"""
     sname = result.get("section_name", "未命名章节")
     st.session_state.sub_chats.setdefault(sname, [])
     st.session_state.sections_content[sname] = result["content"]
     st.success(f"✅ 章节「{sname}」已生成！可在左侧点击进入子对话继续修改。")
 
 
-# ========== 启动时初始化 BM25 索引 ==========
+# ========== BM25 启动初始化 ==========
 if "bm25_initialized" not in st.session_state:
     try:
         all_chunks = vector_store.get_all_chunks()
         if all_chunks:
             bm25_index.build_index(all_chunks)
             logger.info(f"BM25 索引已从 Chroma 初始化，共 {len(all_chunks)} 个片段")
-        else:
-            logger.info("Chroma 向量库为空，跳过 BM25 初始化")
     except Exception as e:
-        logger.warning(f"BM25 初始化失败（首次启动可忽略）: {e}")
+        logger.warning(f"BM25 初始化失败: {e}")
     st.session_state.bm25_initialized = True
 
 
@@ -335,8 +114,8 @@ if "sections_content" not in st.session_state:
 
 # ========== 侧边栏 ==========
 with st.sidebar:
-    st.title("📚 CiteWise")
-    st.caption("智能研究助手 · 从文献到论文")
+    st.title("📚 CiteWise V2")
+    st.caption("多 Agent 协同 · 语义切块 · 图表索引")
 
     # --- 项目管理 ---
     st.subheader("项目管理")
@@ -363,8 +142,11 @@ with st.sidebar:
         pid = project_memory.create_project(nn, nt)
         st.session_state.project_id = pid
         global_profile.update("research_field", nt)
+        # 跨项目复用建议
+        preferred = global_profile.get("field_templates", [])
+        if preferred:
+            st.info(f"💡 可沿用上次字段模板: {preferred[-1].get('name', '')}")
         st.success(f"已创建: {nn}")
-        time.sleep(0.3)
         st.rerun()
 
     # --- 文献上传 ---
@@ -375,7 +157,42 @@ with st.sidebar:
     else:
         uf = st.file_uploader("上传 PDF", type=["pdf"], accept_multiple_files=True)
         if uf and st.button("解析并入库"):
-            _process_uploads(uf)
+            progress = st.progress(0, text="解析中...")
+            all_chunks, total = [], len(uf)
+            fig_count = 0
+            for i, f in enumerate(uf):
+                progress.progress(i / total, text=f"解析 {f.name} ({i+1}/{total})")
+                safe_name = os.path.basename(f.name)
+                path = os.path.join(PAPERS_DIR, safe_name)
+                with open(path, "wb") as fp:
+                    fp.write(f.getbuffer())
+                data = parse_pdf(path)
+                chunks = chunk_paper(data)
+                project_memory.add_paper(data["paper_id"], st.session_state.project_id,
+                                         data.get("title", f.name), data.get("authors",""),
+                                         data.get("year",0), f.name, len(chunks))
+                all_chunks.extend(chunks)
+                # 存储图表元数据
+                for fig in data.get("figures", []):
+                    project_memory.add_figure(
+                        fig["figure_id"], data["paper_id"], st.session_state.project_id,
+                        fig["page"], fig["caption"],
+                        fig.get("context_before", ""), fig.get("context_after", ""),
+                        fig.get("section_title", ""),
+                        fig.get("width", 0), fig.get("height", 0)
+                    )
+                    fig_count += 1
+            progress.progress(0.7, text="向量化中...")
+            vector_store.index_chunks(all_chunks)
+            bm25_index.build_index(vector_store.get_all_chunks())
+            progress.progress(1.0, text="完成!")
+            msg = f"已入库 {total} 篇论文，{len(all_chunks)} 个片段"
+            if fig_count:
+                msg += f"，{fig_count} 张图表"
+            st.success(msg)
+            st.session_state.main_chat.append({"role":"assistant","content":msg,"type":"text"})
+            st.session_state._show_insights = True
+            st.rerun()
 
     # --- 项目状态 + 章节管理 ---
     st.divider()
@@ -383,12 +200,12 @@ with st.sidebar:
         st.subheader("📊 项目状态")
         state = project_memory.get_project_state(st.session_state.project_id)
         if state:
-            c1, c2, c3 = st.columns(3)
+            c1, c2, c3, c4 = st.columns(4)
             c1.metric("论文", state.get("paper_count", 0))
             c2.metric("已提取", state.get("extraction_count", 0))
             c3.metric("已生成", state.get("section_count", 0))
+            c4.metric("图表", state.get("figure_count", 0))
 
-            # 章节列表
             sections_with_id = state.get("sections_with_id", [])
             if sections_with_id:
                 st.markdown("**📝 已生成章节**")
@@ -407,7 +224,6 @@ with st.sidebar:
                                 st.session_state.current_chat = "main"
                             st.rerun()
 
-            # 新增章节
             st.markdown("**➕ 新增章节**")
             new_sec = st.text_input("章节名称", placeholder="如：文献综述", key="new_sec")
             if st.button("生成", key="btn_gen_sec") and new_sec:
@@ -419,7 +235,6 @@ with st.sidebar:
                     st.session_state.current_chat = "main"
                     st.rerun()
 
-            # 论文列表
             papers = state.get("papers", [])
             if papers:
                 with st.expander(f"📋 论文列表 ({len(papers)})"):
@@ -437,8 +252,94 @@ with st.sidebar:
         _export_document()
 
 
+def _export_document():
+    if not st.session_state.project_id:
+        return
+    sections = project_memory.get_sections(st.session_state.project_id)
+    if not sections:
+        st.warning("还没有生成章节")
+        return
+    proj = project_memory.get_project(st.session_state.project_id)
+    doc = f"# {proj['name']}\n\n"
+    for s in sections:
+        doc += s["content"] + "\n\n---\n\n"
+    st.download_button("下载 Markdown", doc, "research_paper.md", "text/markdown")
+
+
+def _do_structured_summary(pid, fields):
+    """结构化总结"""
+    from src.core.retriever import hybrid_search, format_chunks_with_citations
+    from src.core.prompt import prompt_engine, SYSTEM_PROMPT_BASE
+
+    papers = project_memory.get_papers(pid)
+    if not papers:
+        st.error("没有论文"); return
+
+    prog = st.progress(0, text="提取中...")
+    results = []
+    for idx, p in enumerate(papers[:10]):
+        prog.progress((idx+1)/min(len(papers),10), text=f"提取 {p['title'][:35]}...")
+        chunks = hybrid_search(", ".join(fields), top_k=5, where={"paper_id": p["id"]})
+        if not chunks:
+            continue
+        txt = format_chunks_with_citations(chunks)
+        ext = llm_client.chat_json([{"role":"system","content":SYSTEM_PROMPT_BASE},
+            {"role":"user","content":prompt_engine.build_extract_prompt(fields, txt)}], temperature=0.3)
+        if "fields" in ext:
+            project_memory.save_extraction(pid, p["id"], "自定义", ext.get("fields",{}), ext.get("confidence",{}))
+            results.append({"paper_title":p["title"],"authors":p["authors"],"year":p.get("year",""),**ext.get("fields",{})})
+    prog.empty()
+
+    if not results:
+        st.warning("提取失败"); return
+
+    st.session_state._summary_result = results
+    st.session_state._summary_fields = fields
+    st.session_state.main_chat.append({"role":"assistant","content":"结构化总结完成","type":"text"})
+    st.rerun()
+
+
+def _render_summary_results():
+    """渲染结构化总结结果"""
+    results = st.session_state.get("_summary_result")
+    fields = st.session_state.get("_summary_fields")
+    if not results:
+        return
+
+    st.markdown("### 📊 结构化对比表格")
+    df = pd.DataFrame(results)
+    st.dataframe(df, use_container_width=True)
+
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="结构化总结")
+    buf.seek(0)
+    st.download_button("📥 下载 Excel", buf.getvalue(), "structured_summary.xlsx",
+                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+    st.markdown("### 📈 可视化图表")
+    chart_fields = [f for f in fields if f in df.columns]
+    if chart_fields:
+        col1, col2 = st.columns(2)
+        with col1:
+            sel = st.selectbox("选择字段", chart_fields, key="chart_sel")
+            if sel:
+                counts = df[sel].value_counts()
+                st.markdown(f"**{sel}** 分布")
+                chart_data = pd.DataFrame({"label": counts.index.astype(str), "count": counts.values})
+                st.bar_chart(chart_data.set_index("label"))
+        with col2:
+            st.markdown("**论文年份分布**")
+            if "year" in df.columns:
+                year_counts = df["year"].value_counts().sort_index()
+                yc = pd.DataFrame({"year": year_counts.index.astype(str), "count": year_counts.values})
+                st.bar_chart(yc.set_index("year"))
+            else:
+                st.info("无年份数据")
+
+
 # ========== 主区域 ==========
-st.title("CiteWise — 智能研究助手")
+st.title("CiteWise V2 — 智能研究助手")
 
 if not st.session_state.project_id:
     st.warning("请在左侧创建或选择项目")
@@ -449,15 +350,16 @@ proj = project_memory.get_project(st.session_state.project_id)
 # ========== 主对话 ==========
 current = st.session_state.current_chat
 if current == "main":
-    st.info(f"📋 **主对话** — {proj['name']} | 全局记忆，影响所有子对话")
-    st.markdown(
-        '<div style="display:flex;gap:12px;font-size:.82em;color:#666">'
-        '<span>来源：</span>'
-        '<span style="border-left:3px solid #3b82f6;padding-left:6px">📖 知识库</span>'
-        '<span style="border-left:3px solid #22c55e;padding-left:6px">🌐 联网</span>'
-        '<span style="border-left:3px solid #a855f7;padding-left:6px">🧠 推理</span>'
-        '</div>', unsafe_allow_html=True
-    )
+    st.info(f"📋 **主对话** — {proj['name']} | 多 Agent 协同模式")
+    st.markdown(SOURCE_LEGEND, unsafe_allow_html=True)
+
+    # 数据洞察（上传后自动弹出）
+    if st.session_state.pop("_show_insights", False):
+        with st.expander("💡 数据洞察与建议", expanded=True):
+            render_insights_panel(st.session_state.project_id)
+
+    # 图表索引
+    render_figures_panel(st.session_state.project_id)
 
     # 结构化总结面板
     with st.expander("📊 结构化总结", expanded=False):
@@ -470,13 +372,13 @@ if current == "main":
                 _do_structured_summary(st.session_state.project_id, [f.strip() for f in fs.split(",") if f.strip()])
     st.divider()
 
-    # 渲染结构化总结结果（从 session_state 取，避免容器嵌套）
+    # 渲染结构化总结结果
     _render_summary_results()
 
     # 主对话历史
     for msg in st.session_state.main_chat:
         with st.chat_message(msg["role"]):
-            _render_msg(msg)
+            render_msg(msg)
 
     # 处理侧边栏触发的章节生成
     if st.session_state.get("_pending_section"):
@@ -484,10 +386,13 @@ if current == "main":
         with st.chat_message("assistant"):
             with st.spinner(f"正在生成「{sec_name}」..."):
                 try:
-                    result = agent.process_message(f"帮我写{sec_name}", st.session_state.project_id)
+                    result = coordinator.process(
+                        f"帮我写{sec_name}", st.session_state.project_id,
+                        section_name=sec_name,
+                    )
                 except Exception as e:
                     logger.error(f"章节生成错误: {e}", exc_info=True)
-                    result = {"type":"text","content":f"出错: {e}","intent":"error"}
+                    result = {"type":"text","content":"处理请求时发生内部错误，请重试。","intent":"error"}
             rtype = _handle_agent_result(result)
             _save_to_history(st.session_state.main_chat, result)
             if rtype == "section":
@@ -495,14 +400,13 @@ if current == "main":
         st.rerun()
 
     # 主对话输入
-    if prompt := st.chat_input("主对话 — 总结/框架/写引言/联网搜索..."):
+    if prompt := st.chat_input("主对话 — 总结/框架/写引言/联网搜索/分析数据..."):
         st.session_state.main_chat.append({"role":"user","content":prompt,"type":"text"})
         with st.chat_message("user"):
             st.markdown(prompt)
         with st.chat_message("assistant"):
-            # 检测删除章节指令
             delete_done = False
-            if "删除" in prompt or "删掉" in prompt:
+            if prompt.startswith("删除") or prompt.startswith("删掉"):
                 for sec in project_memory.get_unique_sections(st.session_state.project_id):
                     if sec["section_name"] in prompt:
                         project_memory.delete_section(sec["id"])
@@ -517,17 +421,18 @@ if current == "main":
             if delete_done:
                 st.rerun()
             else:
-                with st.spinner("思考中..."):
+                with st.spinner("多 Agent 协同处理中..."):
                     try:
-                        result = agent.process_message(prompt, st.session_state.project_id)
+                        result = coordinator.process(prompt, st.session_state.project_id)
                     except Exception as e:
                         logger.error(f"Agent错误: {e}", exc_info=True)
-                        result = {"type":"text","content":f"出错: {e}","intent":"error"}
+                        result = {"type":"text","content":"处理请求时发生内部错误，请重试。","intent":"error"}
 
                 rtype = _handle_agent_result(result)
                 _save_to_history(st.session_state.main_chat, result)
                 if rtype == "section":
                     _register_section(result)
+
 
 # ========== 子对话 ==========
 else:
@@ -535,9 +440,7 @@ else:
     st.info(f"📝 **子对话：{section_name}** | 继承主对话上下文，修改仅在本对话生效")
     st.caption(f"所属项目：{proj['name']}")
 
-    # 当前章节内容
     sec_content = st.session_state.sections_content.get(section_name, "")
-    # 尝试从 DB 加载（首次从侧边栏点进来时 session 可能没有）
     if not sec_content:
         sections = project_memory.get_unique_sections(st.session_state.project_id)
         for s in sections:
@@ -551,38 +454,29 @@ else:
             st.markdown(sec_content)
 
     st.divider()
-    st.markdown(
-        '<div style="display:flex;gap:12px;font-size:.82em;color:#666">'
-        '<span>来源：</span>'
-        '<span style="border-left:3px solid #3b82f6;padding-left:6px">📖 知识库</span>'
-        '<span style="border-left:3px solid #22c55e;padding-left:6px">🌐 联网</span>'
-        '<span style="border-left:3px solid #a855f7;padding-left:6px">🧠 推理</span>'
-        '</div>', unsafe_allow_html=True
-    )
+    st.markdown(SOURCE_LEGEND, unsafe_allow_html=True)
 
-    # 子对话历史
     sub_history = st.session_state.sub_chats.get(section_name, [])
     for msg in sub_history:
         with st.chat_message(msg["role"]):
-            _render_msg(msg)
+            render_msg(msg)
 
-    # 子对话输入
-    if prompt := st.chat_input(f"子对话：{section_name} — 修改/补充/联网搜索..."):
+    if prompt := st.chat_input(f"子对话：{section_name} — 修改/拆分表格/合并图表..."):
         main_summary = "\n".join(
-            f"[{m['role']}] {str(m.get('content',''))[:150]}"
-            for m in st.session_state.main_chat[-6:]
+            f"[{m['role']}] {str(m.get('content',''))[:CONTENT_SNIPPET_LENGTH]}"
+            for m in st.session_state.main_chat[-MAIN_HISTORY_WINDOW:]
             if m["role"] == "user" or m.get("type") == "text"
-        )[-800:]
+        )[-MAIN_CONTEXT_BUDGET:]
 
         sub_context = "\n".join(
-            f"[{m['role']}] {str(m.get('content',''))[:150]}"
+            f"[{m['role']}] {str(m.get('content',''))[:CONTENT_SNIPPET_LENGTH]}"
             for m in sub_history[-4:]
-        )[-600:]
+        )[-SUB_CONTEXT_BUDGET:]
 
         augmented_prompt = f"""用户正在撰写论文的「{section_name}」章节。
 
 当前章节内容：
-{sec_content[:3000]}
+{sec_content[:SECTION_CONTENT_BUDGET]}
 
 主对话上下文：
 {main_summary}
@@ -592,7 +486,7 @@ else:
 
 用户最新指令：{prompt}
 
-请根据用户指令对「{section_name}」章节进行操作（修改、补充、扩展等）。直接输出修改后的内容或回答。"""
+请根据用户指令对「{section_name}」章节进行操作。直接输出修改后的内容或回答。"""
 
         st.session_state.sub_chats.setdefault(section_name, []).append(
             {"role":"user","content":prompt,"type":"text"})
@@ -602,10 +496,14 @@ else:
         with st.chat_message("assistant"):
             with st.spinner("思考中..."):
                 try:
-                    result = agent.process_message(augmented_prompt, st.session_state.project_id)
+                    result = coordinator.process(
+                        augmented_prompt, st.session_state.project_id,
+                        intent="modify",
+                        target_content=sec_content,
+                    )
                 except Exception as e:
                     logger.error(f"子对话错误: {e}", exc_info=True)
-                    result = {"type":"text","content":f"出错: {e}","intent":"error"}
+                    result = {"type":"text","content":"处理请求时发生内部错误，请重试。","intent":"error"}
 
             _handle_agent_result(result)
             _save_to_history(st.session_state.sub_chats[section_name], result)
