@@ -104,7 +104,7 @@ async def chat_endpoint(req: ChatRequest):
                     success=False,
                     response_time_ms=int((time.time() - start_time) * 1000),
                     llm_model="glm-4.7",
-                    metadata={"error": str(e)},
+                    metadata={"error": "internal_error"},
                 )
             except Exception:
                 pass

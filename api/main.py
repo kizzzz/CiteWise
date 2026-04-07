@@ -64,7 +64,7 @@ async def lifespan(app: FastAPI):
     try:
         from src.eval.metrics import init_eval_db
         from config.settings import DB_PATH
-        eval_db_path = DB_PATH.replace("citewise.db", "eval.db")
+        eval_db_path = os.path.join(os.path.dirname(DB_PATH), "eval.db")
         init_eval_db(eval_db_path)
         logger.info(f"Eval DB 已初始化: {eval_db_path}")
     except Exception as e:

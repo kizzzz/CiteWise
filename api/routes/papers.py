@@ -247,7 +247,8 @@ async def get_paper_detail(paper_id: str):
 
     # 尝试从向量库获取摘要
     try:
-        chunks = hybrid_search(
+        chunks = await asyncio.to_thread(
+            hybrid_search,
             f"{paper.get('title', '')} abstract summary",
             top_k=3, where={"paper_id": paper_id}
         )

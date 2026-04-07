@@ -408,25 +408,25 @@ async function handleSendChat() {
 }
 
 async function streamCategorizedText(target, fullText) {
-    // Parse emoji-based source annotations from backend
+    // Parse [KB]/[WEB]/[AI] source annotations from backend
     const parts = [];
     const lines = fullText.split('\n');
     let currentType = 'ai';
     let currentText = '';
 
     for (const line of lines) {
-        if (line.startsWith('\u{1F4D6}')) {  // 📖 RAG
+        if (line.startsWith('[KB]')) {
             if (currentText.trim()) parts.push({ type: currentType, text: currentText });
             currentType = 'kb';
-            currentText = line.slice(2) + '\n';  // Remove emoji prefix
-        } else if (line.startsWith('\u{1F310}')) {  // 🌐 Web
+            currentText = line.slice(4).trimStart() + '\n';
+        } else if (line.startsWith('[WEB]')) {
             if (currentText.trim()) parts.push({ type: currentType, text: currentText });
             currentType = 'web';
-            currentText = line.slice(2) + '\n';
-        } else if (line.startsWith('\u{1F9E0}')) {  // 🧠 LLM
+            currentText = line.slice(5).trimStart() + '\n';
+        } else if (line.startsWith('[AI]')) {
             if (currentText.trim()) parts.push({ type: currentType, text: currentText });
             currentType = 'ai';
-            currentText = line.slice(2) + '\n';
+            currentText = line.slice(4).trimStart() + '\n';
         } else {
             currentText += line + '\n';
         }
@@ -477,7 +477,7 @@ function renderFields() {
     const c = document.getElementById('fieldContainer');
     if (!c) return;
     c.innerHTML = extractionFields.map((f, i) =>
-        `<div class="field-pill active">${f} <button onclick="removeField(${i})" class="ml-1 hover:text-red-500">&times;</button></div>`
+        `<div class="field-pill active">${escapeHtml(f)} <button onclick="removeField(${i})" class="ml-1 hover:text-red-500">&times;</button></div>`
     ).join('');
 }
 
