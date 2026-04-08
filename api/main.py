@@ -127,6 +127,11 @@ app.include_router(eval_router, prefix="/api")
 static_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static")
 if os.path.isdir(static_dir):
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
+    # 额外挂载子目录，使相对路径在前后端分离部署时也能工作
+    for _sub in ("vendor", "js", "css", "html"):
+        _sub_dir = os.path.join(static_dir, _sub)
+        if os.path.isdir(_sub_dir):
+            app.mount(f"/{_sub}", StaticFiles(directory=_sub_dir), name=f"static-{_sub}")
 
 
 @app.get("/")
