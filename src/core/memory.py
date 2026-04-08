@@ -171,6 +171,19 @@ class ProjectMemory:
             rows = conn.execute("SELECT * FROM projects ORDER BY created_at DESC").fetchall()
         return [dict(r) for r in rows]
 
+    def delete_project(self, project_id: str) -> bool:
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT id FROM projects WHERE id=?", (project_id,)).fetchone()
+            if not row:
+                return False
+            conn.execute("DELETE FROM figures WHERE project_id=?", (project_id,))
+            conn.execute("DELETE FROM generated_sections WHERE project_id=?", (project_id,))
+            conn.execute("DELETE FROM extractions WHERE project_id=?", (project_id,))
+            conn.execute("DELETE FROM papers WHERE project_id=?", (project_id,))
+            conn.execute("DELETE FROM projects WHERE id=?", (project_id,))
+            conn.commit()
+        return True
+
     # --- 论文管理 ---
     def add_paper(self, paper_id: str, project_id: str, title: str,
                   authors: str, year: int, filename: str, chunk_count: int = 0):

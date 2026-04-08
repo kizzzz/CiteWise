@@ -115,9 +115,26 @@ function renderProjectList() {
     const c = document.getElementById('projectListContainer');
     if (!c) return;
     c.innerHTML = projects.map(p =>
-        `<div onclick="selectProject('${escapeAttr(p.id)}')" class="p-3 hover:bg-blue-50 cursor-pointer rounded-lg font-bold ${p.id === currentProjectId ? 'bg-blue-50 text-blue-700' : 'text-slate-700'}">${escapeHtml(p.name)}</div>`
+        `<div class="group flex items-center justify-between p-3 hover:bg-blue-50 cursor-pointer rounded-lg font-bold ${p.id === currentProjectId ? 'bg-blue-50 text-blue-700' : 'text-slate-700'}">
+            <span onclick="selectProject('${escapeAttr(p.id)}')" class="flex-1 truncate">${escapeHtml(p.name)}</span>
+            <button onclick="event.stopPropagation();confirmDeleteProject('${escapeAttr(p.id)}','${escapeJs(p.name)}')" class="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-red-500 transition-opacity ml-2" title="删除项目">
+                <i data-lucide="trash-2" class="w-4 h-4"></i>
+            </button>
+        </div>`
     ).join('');
     lucide.createIcons();
+}
+
+async function confirmDeleteProject(id, name) {
+    if (!confirm(`确定删除项目「${name}」？该操作不可恢复。`)) return;
+    try {
+        await api('DELETE', `/projects/${id}`);
+        showToast('项目已删除', 'success');
+        if (currentProjectId === id) currentProjectId = null;
+        await loadProjects();
+    } catch (e) {
+        showToast('删除失败: ' + e.message, 'error');
+    }
 }
 
 async function confirmCreateProject() {

@@ -30,3 +30,13 @@ async def get_project_state(project_id: str):
     from src.core.memory import project_memory
     state = project_memory.get_project_state(project_id)
     return state
+
+
+@router.delete("/projects/{project_id}")
+async def delete_project(project_id: str):
+    from src.core.memory import project_memory
+    ok = project_memory.delete_project(project_id)
+    if not ok:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="项目不存在")
+    return {"detail": "删除成功"}
