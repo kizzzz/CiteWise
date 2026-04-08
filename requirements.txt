@@ -36,10 +36,6 @@ duckduckgo-search>=4.0.0
 # HTTP client
 httpx>=0.25.0
 
-# 认证
-PyJWT>=2.8.0
-passlib[bcrypt]>=1.7.4
-
 # 数值计算
 numpy>=1.24.0
 
