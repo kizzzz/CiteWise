@@ -14,3 +14,5 @@ services:
         value: embedding-3
       - key: EMBEDDING_DIMENSION
         value: "2048"
+      - key: PORT
+        value: "10000"
