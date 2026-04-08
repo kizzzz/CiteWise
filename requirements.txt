@@ -1,10 +1,7 @@
 # CiteWise V3 核心依赖
 
 # Web 框架
-fastapi>=0.104.0
-uvicorn[standard]>=0.24.0
-python-multipart>=0.0.6
-sse-starlette>=1.8.0
+streamlit>=1.30.0
 
 # LLM
 openai>=1.6.0

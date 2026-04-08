@@ -10,8 +10,8 @@ def render_annotated_content(content: str):
         st.write(content)
         return
 
-    parts = re.split(r'\n(?=📖|🌐|🧠)', content)
-    has_annotation = any(p.strip().startswith(('📖', '🌐', '🧠')) for p in parts)
+    parts = re.split(r'\n(?=\[KB\]|\[WEB\]|\[AI\])', content)
+    has_annotation = any(p.strip().startswith(('[KB]', '[WEB]', '[AI]')) for p in parts)
 
     if not has_annotation:
         st.markdown(content)
@@ -21,14 +21,16 @@ def render_annotated_content(content: str):
         part = part.strip()
         if not part:
             continue
-        body = part[1:].strip() if len(part) > 1 else ""
-        if part.startswith("📖"):
+        if part.startswith("[KB]"):
+            body = part[4:].strip()
             st.markdown('<div class="source-rag"><b>📖 知识库文献</b></div>', unsafe_allow_html=True)
             st.markdown(body)
-        elif part.startswith("🌐"):
+        elif part.startswith("[WEB]"):
+            body = part[5:].strip()
             st.markdown('<div class="source-web"><b>🌐 联网搜索</b></div>', unsafe_allow_html=True)
             st.markdown(body)
-        elif part.startswith("🧠"):
+        elif part.startswith("[AI]"):
+            body = part[4:].strip()
             st.markdown('<div class="source-llm"><b>🧠 大模型推理</b></div>', unsafe_allow_html=True)
             st.markdown(body)
         else:
