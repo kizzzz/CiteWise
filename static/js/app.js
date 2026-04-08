@@ -1399,13 +1399,25 @@ function showAuthModal(mode) {
         if (submitBtn) submitBtn.textContent = '注册';
         if (toggleBtn) toggleBtn.textContent = '已有账号？立即登录';
     }
+    // Clear form & errors
     const errEl = document.getElementById('authError');
     if (errEl) errEl.classList.add('hidden');
-    toggleModal('authModal');
+    const userIn = document.getElementById('authUsername');
+    const passIn = document.getElementById('authPassword');
+    if (userIn) userIn.value = '';
+    if (passIn) passIn.value = '';
+    // Always SHOW modal (never toggle — avoids closing when switching modes)
+    const modal = document.getElementById('authModal');
+    if (modal) modal.classList.remove('hidden');
 }
 
 function toggleAuthMode() {
     showAuthModal(authMode === 'login' ? 'register' : 'login');
+}
+
+function closeAuthModal() {
+    const modal = document.getElementById('authModal');
+    if (modal) modal.classList.add('hidden');
 }
 
 async function handleAuth() {
@@ -1441,7 +1453,7 @@ async function handleAuth() {
         currentUser = { id: data.user.id, username: data.user.username, token: data.token };
         localStorage.setItem('citewise_user', JSON.stringify(currentUser));
         updateAuthUI();
-        toggleModal('authModal');
+        closeAuthModal();
         showToast(authMode === 'login' ? '登录成功' : '注册成功', 'success');
     } catch (e) {
         if (errEl) { errEl.textContent = '网络错误: ' + e.message; errEl.classList.remove('hidden'); }
