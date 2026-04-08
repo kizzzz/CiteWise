@@ -616,7 +616,7 @@
                     <div class="space-y-4">
                         <div class="flex justify-between items-center">
                             <h4 class="font-bold text-slate-800">API 密钥管理</h4>
-                            <button onclick="toggleModal('keyModal')" class="text-xs text-blue-600 font-bold hover:underline">+ 新增配置</button>
+                            <button onclick="openNewKeyModal()" class="text-xs text-blue-600 font-bold hover:underline">+ 新增配置</button>
                         </div>
                         <div id="apiKeyListContainer" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
                     </div>
@@ -705,17 +705,45 @@
 
         <!-- Key Modal -->
         <div id="keyModal" class="hidden absolute inset-0 z-50 flex items-center justify-center modal-overlay p-4 text-sm">
-            <div class="bg-white w-full max-w-md rounded-3xl p-8 space-y-5 shadow-2xl animate__animated animate__zoomIn">
+            <div class="bg-white w-full max-w-lg rounded-3xl p-8 space-y-5 shadow-2xl animate__animated animate__zoomIn">
                 <div class="flex justify-between items-center">
-                    <h3 class="text-lg font-bold">API Key 配置</h3>
+                    <h3 class="text-lg font-bold">配置 LLM API Key</h3>
                     <button onclick="toggleModal('keyModal')"><i data-lucide="x"></i></button>
                 </div>
-                <p class="text-xs text-slate-500">填入智谱 API Key 以使用对话和文献分析功能。</p>
-                <input id="keyValueInput" type="password" class="w-full border p-3 rounded-xl bg-slate-50" placeholder="智谱 API Key (如: abc123.xxxxx)">
+                <p class="text-xs text-slate-500">选择大模型供应商，填入 API Key 和 Base URL，验证通过后保存。所有 Agent 将使用该 Key。</p>
+                <!-- Provider Selection -->
+                <div>
+                    <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">供应商</label>
+                    <select id="keyProviderSelect" onchange="onProviderChange()" class="w-full border p-3 rounded-xl bg-slate-50 outline-none focus:ring-2 focus:ring-blue-500">
+                        <option value="zhipu">智谱 (GLM)</option>
+                        <option value="deepseek">DeepSeek</option>
+                        <option value="openai">OpenAI</option>
+                        <option value="moonshot">Moonshot (Kimi)</option>
+                        <option value="qwen">通义千问</option>
+                        <option value="custom">自定义 (OpenAI 兼容)</option>
+                    </select>
+                </div>
+                <!-- API Key -->
+                <div>
+                    <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">API Key</label>
+                    <input id="keyValueInput" type="password" class="w-full border p-3 rounded-xl bg-slate-50" placeholder="输入 API Key...">
+                </div>
+                <!-- Base URL -->
+                <div>
+                    <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Base URL</label>
+                    <input id="keyBaseUrlInput" class="w-full border p-3 rounded-xl bg-slate-50" placeholder="API Base URL (通常自动填充)">
+                </div>
+                <!-- Verify Result -->
                 <div id="keyVerifyResult" class="hidden text-xs font-bold p-2 rounded-lg"></div>
-                <button onclick="verifyAndSaveApiKey()" id="keyVerifyBtn" class="w-full py-4 bg-blue-600 text-white rounded-2xl font-bold shadow-lg hover:bg-blue-700 transition-all">
-                    验证并保存
-                </button>
+                <!-- Actions -->
+                <div class="flex gap-3">
+                    <button onclick="verifyAndSaveApiKey()" id="keyVerifyBtn" class="flex-1 py-3 bg-blue-600 text-white rounded-2xl font-bold shadow-lg hover:bg-blue-700 transition-all">
+                        验证
+                    </button>
+                    <button onclick="deleteApiKey()" id="keyDeleteBtn" class="hidden py-3 px-5 bg-white border border-red-200 text-red-500 rounded-2xl font-bold hover:bg-red-50 transition-all">
+                        删除
+                    </button>
+                </div>
             </div>
         </div>
 

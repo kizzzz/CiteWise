@@ -57,12 +57,20 @@ document.addEventListener('DOMContentLoaded', async () => {
         } catch { currentUser = null; }
     }
 
-    // Restore API key
-    const savedKey = localStorage.getItem('citewise_api_key');
-    if (savedKey) {
-        apiKeys = [{ id: '1', name: '智谱 API Key', value: savedKey, active: true }];
-        renderApiKeyList();
+    // Restore API keys (new multi-provider format)
+    const savedKeys = localStorage.getItem('citewise_api_keys');
+    if (savedKeys) {
+        try { apiKeys = JSON.parse(savedKeys); } catch { apiKeys = []; }
     }
+    // Migrate old single-key format
+    if (apiKeys.length === 0) {
+        const oldKey = localStorage.getItem('citewise_api_key');
+        if (oldKey) {
+            apiKeys = [{ provider: 'zhipu', apiKey: oldKey, baseUrl: 'https://open.bigmodel.cn/api/paas/v4/', active: true }];
+            saveApiKeysToStorage(apiKeys);
+        }
+    }
+    renderApiKeyList();
 
     // Enter key for chat input
     document.getElementById('chatInput').addEventListener('keypress', (e) => {
@@ -1109,31 +1117,194 @@ function confirmCreateSkill() {
 }
 
 // ============ API Key Management ============
+const PROVIDER_DEFAULTS = {
+    zhipu:    { name: '智谱 (GLM)',       baseUrl: 'https://open.bigmodel.cn/api/paas/v4/' },
+    deepseek: { name: 'DeepSeek',          baseUrl: 'https://api.deepseek.com/v1/' },
+    openai:   { name: 'OpenAI',            baseUrl: 'https://api.openai.com/v1/' },
+    moonshot: { name: 'Moonshot (Kimi)',    baseUrl: 'https://api.moonshot.cn/v1/' },
+    qwen:     { name: '通义千问',          baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1/' },
+    custom:   { name: '自定义',            baseUrl: '' },
+};
+
+function loadApiKeysFromStorage() {
+    const saved = localStorage.getItem('citewise_api_keys');
+    if (saved) {
+        try { return JSON.parse(saved); } catch { /* ignore */ }
+    }
+    return [];
+}
+
+function saveApiKeysToStorage(keys) {
+    localStorage.setItem('citewise_api_keys', JSON.stringify(keys));
+}
+
+function getActiveApiKey() {
+    const keys = loadApiKeysFromStorage();
+    return keys.find(k => k.active) || null;
+}
+
 function renderApiKeyList() {
     const c = document.getElementById('apiKeyListContainer');
     if (!c) return;
-    if (apiKeys.length === 0) {
-        c.innerHTML = '<div class="col-span-2 text-center text-slate-400 py-8">暂无 API Key，请点击右上角配置</div>';
+    const keys = loadApiKeysFromStorage();
+    if (keys.length === 0) {
+        c.innerHTML = '<div class="col-span-2 text-center text-slate-400 py-12">暂无 API Key 配置，点击右上角「+ 新增配置」添加</div>';
         return;
     }
-    c.innerHTML = apiKeys.map(k =>
-        `<div class="p-5 bg-white border border-slate-200 rounded-2xl shadow-sm cursor-pointer ${k.active ? 'key-card-active' : ''}" onclick="switchKey('${k.id}')">
-            <div class="font-bold text-sm text-slate-800">${escapeHtml(k.name)}</div>
-            <div class="text-[10px] text-slate-400 font-mono">••••${escapeHtml(k.value.slice(-4))}</div>
-            <div class="text-[9px] mt-2 font-bold ${k.active ? 'text-emerald-600' : 'text-slate-400'}">${k.active ? '● 已激活' : '未激活'}</div>
-        </div>`
-    ).join('');
+    c.innerHTML = keys.map((k, i) => {
+        const prov = PROVIDER_DEFAULTS[k.provider] || { name: k.provider };
+        return `<div class="p-5 bg-white border border-slate-200 rounded-2xl shadow-sm cursor-pointer hover:border-blue-300 transition-all ${k.active ? 'key-card-active' : ''}" onclick="editApiKey(${i})">
+            <div class="flex justify-between items-start">
+                <div class="font-bold text-sm text-slate-800">${escapeHtml(prov.name)}</div>
+                <span class="text-[8px] font-bold uppercase px-2 py-0.5 rounded ${k.active ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-400'}">${k.active ? '使用中' : '未激活'}</span>
+            </div>
+            <div class="text-[10px] text-slate-400 font-mono mt-1">••••${escapeHtml((k.apiKey || '').slice(-4))}</div>
+            <div class="text-[9px] text-slate-300 mt-1 truncate">${escapeHtml(k.baseUrl || '')}</div>
+            <div class="flex gap-2 mt-3">
+                <button onclick="event.stopPropagation();activateApiKey(${i})" class="text-[9px] px-2 py-1 rounded-lg ${k.active ? 'bg-emerald-50 text-emerald-600 font-bold' : 'bg-slate-50 text-slate-500 hover:bg-blue-50 hover:text-blue-600'}">${k.active ? '当前' : '启用'}</button>
+                <button onclick="event.stopPropagation();confirmDeleteApiKey(${i})" class="text-[9px] px-2 py-1 rounded-lg bg-slate-50 text-slate-400 hover:bg-red-50 hover:text-red-500">删除</button>
+            </div>
+        </div>`;
+    }).join('');
 }
 
-function saveApiKey() {
-    // Open the new key modal
+function onProviderChange() {
+    const sel = document.getElementById('keyProviderSelect');
+    const urlInput = document.getElementById('keyBaseUrlInput');
+    if (!sel || !urlInput) return;
+    const provider = sel.value;
+    const prov = PROVIDER_DEFAULTS[provider];
+    if (prov && prov.baseUrl) {
+        urlInput.value = prov.baseUrl;
+    }
+}
+
+function editApiKey(index) {
+    const keys = loadApiKeysFromStorage();
+    if (index >= 0 && index < keys.length) {
+        const k = keys[index];
+        document.getElementById('keyProviderSelect').value = k.provider || 'custom';
+        document.getElementById('keyValueInput').value = k.apiKey || '';
+        document.getElementById('keyBaseUrlInput').value = k.baseUrl || '';
+        document.getElementById('keyDeleteBtn').classList.remove('hidden');
+        document.getElementById('keyDeleteBtn').onclick = () => { deleteApiKeyByIndex(index); };
+    }
+    const resultEl = document.getElementById('keyVerifyResult');
+    if (resultEl) resultEl.classList.add('hidden');
     toggleModal('keyModal');
 }
 
-function switchKey(id) {
-    apiKeys.forEach(k => { k.active = (k.id === id); });
+function activateApiKey(index) {
+    const keys = loadApiKeysFromStorage();
+    keys.forEach((k, i) => { k.active = (i === index); });
+    saveApiKeysToStorage(keys);
     renderApiKeyList();
-    showToast('模型切换成功', 'success');
+    showToast(`已切换到 ${PROVIDER_DEFAULTS[keys[index].provider]?.name || keys[index].provider}`, 'success');
+}
+
+function confirmDeleteApiKey(index) {
+    const keys = loadApiKeysFromStorage();
+    const prov = PROVIDER_DEFAULTS[keys[index]?.provider] || { name: '' };
+    if (confirm(`确定删除「${prov.name}」的 API Key 配置？`)) {
+        deleteApiKeyByIndex(index);
+    }
+}
+
+function deleteApiKeyByIndex(index) {
+    let keys = loadApiKeysFromStorage();
+    const wasActive = keys[index]?.active;
+    keys.splice(index, 1);
+    if (wasActive && keys.length > 0) keys[0].active = true;
+    saveApiKeysToStorage(keys);
+    renderApiKeyList();
+    toggleModal('keyModal');
+    showToast('API Key 已删除', 'success');
+}
+
+function deleteApiKey() {
+    // Legacy — now handled by deleteApiKeyByIndex
+}
+
+async function verifyAndSaveApiKey() {
+    const provider = document.getElementById('keyProviderSelect')?.value || 'zhipu';
+    const apiKey = document.getElementById('keyValueInput')?.value.trim() || '';
+    const baseUrl = document.getElementById('keyBaseUrlInput')?.value.trim() || '';
+    const resultEl = document.getElementById('keyVerifyResult');
+    const btn = document.getElementById('keyVerifyBtn');
+
+    if (!apiKey) {
+        if (resultEl) { resultEl.textContent = '请输入 API Key'; resultEl.className = 'text-xs font-bold p-2 rounded-lg text-red-600 bg-red-50'; resultEl.classList.remove('hidden'); }
+        return;
+    }
+
+    if (btn) { btn.disabled = true; btn.textContent = '验证中...'; }
+
+    try {
+        const resp = await fetch(`${API_BASE}/api/apikeys/verify`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ api_key: apiKey, provider, base_url: baseUrl }),
+        });
+        const data = await resp.json();
+
+        if (data.valid) {
+            // Save to key list
+            let keys = loadApiKeysFromStorage();
+            // Check if same provider already exists -> update
+            const existingIdx = keys.findIndex(k => k.provider === provider);
+            const newKey = {
+                provider,
+                apiKey,
+                baseUrl: data.base_url || baseUrl || PROVIDER_DEFAULTS[provider]?.baseUrl || '',
+                active: true,
+            };
+            if (existingIdx >= 0) {
+                keys[existingIdx] = newKey;
+            } else {
+                keys.push(newKey);
+            }
+            // Only one active at a time
+            keys.forEach((k, i) => {
+                const isNew = (existingIdx >= 0 && i === existingIdx) || (existingIdx < 0 && i === keys.length - 1);
+                k.active = isNew;
+            });
+            saveApiKeysToStorage(keys);
+            renderApiKeyList();
+
+            // Also save to backend if logged in
+            if (currentUser) {
+                try {
+                    await fetch(`${API_BASE}/api/apikeys/save`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ api_key: apiKey, user_id: currentUser.id }),
+                    });
+                } catch { /* non-critical */ }
+            }
+
+            if (resultEl) {
+                resultEl.textContent = data.message;
+                resultEl.className = 'text-xs font-bold p-2 rounded-lg text-emerald-600 bg-emerald-50 border border-emerald-100';
+                resultEl.classList.remove('hidden');
+            }
+            showToast('API Key 验证成功', 'success');
+            setTimeout(() => toggleModal('keyModal'), 1200);
+        } else {
+            if (resultEl) {
+                resultEl.textContent = data.message;
+                resultEl.className = 'text-xs font-bold p-2 rounded-lg text-red-600 bg-red-50 border border-red-100';
+                resultEl.classList.remove('hidden');
+            }
+        }
+    } catch (e) {
+        if (resultEl) {
+            resultEl.textContent = '验证请求失败: ' + e.message;
+            resultEl.className = 'text-xs font-bold p-2 rounded-lg text-red-600 bg-red-50';
+            resultEl.classList.remove('hidden');
+        }
+    }
+
+    if (btn) { btn.disabled = false; btn.textContent = '验证'; }
 }
 
 // ============ TTS Placeholder ============
@@ -1256,7 +1427,14 @@ async function handleAuth() {
         const data = await resp.json();
 
         if (!resp.ok) {
-            if (errEl) { errEl.textContent = data.detail || '操作失败'; errEl.classList.remove('hidden'); }
+            if (errEl) {
+                let msg = data.detail || '操作失败';
+                if (Array.isArray(msg)) {
+                    msg = msg.map(e => e.msg || String(e)).join('; ');
+                }
+                errEl.textContent = msg;
+                errEl.classList.remove('hidden');
+            }
             return;
         }
 
@@ -1307,53 +1485,19 @@ function updateAuthUI() {
     }
 }
 
-// ============ API Key Functions (Real) ============
-async function verifyAndSaveApiKey() {
-    const keyInput = document.getElementById('keyValueInput');
+// ============ API Key Functions moved to renderApiKeyList section above ============
+
+function openNewKeyModal() {
+    // Reset form for new key entry
+    const sel = document.getElementById('keyProviderSelect');
+    const keyIn = document.getElementById('keyValueInput');
+    const urlIn = document.getElementById('keyBaseUrlInput');
+    const delBtn = document.getElementById('keyDeleteBtn');
     const resultEl = document.getElementById('keyVerifyResult');
-    const btn = document.getElementById('keyVerifyBtn');
-    if (!keyInput || !keyInput.value.trim()) {
-        if (resultEl) { resultEl.textContent = '请输入 API Key'; resultEl.className = 'text-xs font-bold p-2 rounded-lg text-red-600 bg-red-50'; resultEl.classList.remove('hidden'); }
-        return;
-    }
-
-    const apiKey = keyInput.value.trim();
-    if (btn) { btn.disabled = true; btn.textContent = '验证中...'; }
-
-    try {
-        const resp = await fetch(`${API_BASE}/api/apikeys/verify`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ api_key: apiKey }),
-        });
-        const data = await resp.json();
-
-        if (data.valid) {
-            // Save to localStorage
-            localStorage.setItem('citewise_api_key', apiKey);
-            apiKeys = [{ id: '1', name: '智谱 API Key', value: apiKey, active: true }];
-            renderApiKeyList();
-
-            // Save to backend if logged in
-            if (currentUser) {
-                try {
-                    await fetch(`${API_BASE}/api/apikeys/save`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ api_key: apiKey, user_id: currentUser.id }),
-                    });
-                } catch { /* non-critical */ }
-            }
-
-            if (resultEl) { resultEl.textContent = data.message; resultEl.className = 'text-xs font-bold p-2 rounded-lg text-emerald-600 bg-emerald-50 border border-emerald-100'; resultEl.classList.remove('hidden'); }
-            showToast('API Key 验证成功', 'success');
-            setTimeout(() => toggleModal('keyModal'), 1000);
-        } else {
-            if (resultEl) { resultEl.textContent = data.message; resultEl.className = 'text-xs font-bold p-2 rounded-lg text-red-600 bg-red-50 border border-red-100'; resultEl.classList.remove('hidden'); }
-        }
-    } catch (e) {
-        if (resultEl) { resultEl.textContent = '验证请求失败: ' + e.message; resultEl.className = 'text-xs font-bold p-2 rounded-lg text-red-600 bg-red-50'; resultEl.classList.remove('hidden'); }
-    }
-
-    if (btn) { btn.disabled = false; btn.textContent = '验证并保存'; }
+    if (sel) sel.value = 'zhipu';
+    if (keyIn) keyIn.value = '';
+    if (urlIn) urlIn.value = PROVIDER_DEFAULTS.zhipu.baseUrl;
+    if (delBtn) delBtn.classList.add('hidden');
+    if (resultEl) resultEl.classList.add('hidden');
+    toggleModal('keyModal');
 }

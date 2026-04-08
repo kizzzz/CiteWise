@@ -57,3 +57,9 @@ class LoginRequest(BaseModel):
 
 class ApiKeyRequest(BaseModel):
     api_key: str = Field(..., min_length=1, description="API Key")
+
+
+class ApiKeyVerifyRequest(BaseModel):
+    api_key: str = Field(..., min_length=1, description="API Key")
+    provider: str = Field("zhipu", description="供应商 ID")
+    base_url: str = Field("", description="自定义 Base URL")
