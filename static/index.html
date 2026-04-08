@@ -4,11 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="X-Content-Type-Options" content="nosniff">
-    <meta http-equiv="X-Frame-Options" content="DENY">
     <title>CiteWise V3 — 智能研究助手</title>
-    <script src="https://cdn.tailwindcss.com/3.4.17" crossorigin="anonymous"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css" integrity="sha384-4Dmvoq4YsuE/FzTq0NxJ0HY6iJaSmQ8lPZGJlK7p9ALqhh3WFefMbFpy8dPKOSJ" crossorigin="anonymous">
-    <script src="https://unpkg.com/lucide@0.344.0/dist/umd/lucide.min.js" crossorigin="anonymous"></script>
+    <script src="vendor/tailwindcss.js"></script>
+    <link rel="stylesheet" href="vendor/animate.min.css">
+    <script src="vendor/lucide.min.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Dancing+Script:wght@700&family=Inter:wght@300;400;500;600;700&family=Playfair+Display:ital,wght@0,700;1,700&display=swap');
 
@@ -64,13 +63,18 @@
             flex-direction: column;
         }
 
+        .scroll-thin {
+            scrollbar-width: thin;
+            outline: none;
+        }
+
         .chat-container {
             height: calc(100vh - 160px);
             overflow-y: auto;
             scrollbar-width: thin;
         }
 
-        /* 多源分层流式着色样式 */
+        /* Multi-source streaming color styles */
         .txt-kb { color: #2563eb; font-weight: 500; text-decoration: underline dotted #bfdbfe; text-underline-offset: 4px; cursor: pointer; }
         .txt-kb:hover { background-color: #eff6ff; }
         .txt-web { color: #16a34a; font-weight: 500; border-bottom: 1px solid #bbf7d0; }
@@ -80,6 +84,43 @@
         .nav-item.active {
             background-color: #eff6ff;
             color: #1d4ed8;
+        }
+
+        .interactive-card {
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            border: 1px solid #f1f5f9;
+        }
+        .interactive-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 12px 24px -8px rgba(0,0,0,0.08);
+            border-color: #cbd5e1;
+        }
+
+        .tool-invocation-card {
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-left: 4px solid #3b82f6;
+            padding: 12px 16px;
+            border-radius: 12px;
+            margin: 10px 0;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            animation: slideInLeft 0.5s ease-out;
+        }
+
+        .dimension-card {
+            transition: all 0.3s ease;
+        }
+        .dimension-card:hover {
+            border-color: #3b82f6;
+            transform: scale(1.02);
+            box-shadow: 0 10px 15px -3px rgba(59, 130, 246, 0.1);
+        }
+
+        .key-card-active {
+            border: 2px solid #3b82f6 !important;
+            background: #eff6ff !important;
         }
 
         .dropdown-menu {
@@ -194,8 +235,8 @@
     </svg>
 
     <!-- Sidebar -->
-    <aside class="w-72 glass-sidebar flex flex-col h-full z-10 shadow-xl">
-        <div class="p-6 flex-1 overflow-y-auto library-scroll">
+    <aside class="w-72 glass-sidebar flex flex-col h-full z-10 shadow-xl text-sm">
+        <div class="p-6 flex-1 overflow-y-auto scroll-thin">
             <div class="flex items-center gap-2 mb-10 group cursor-default">
                 <div class="gemini-logo">
                     <svg viewBox="0 0 24 24" class="sparkle-icon" width="28" height="28">
@@ -206,37 +247,48 @@
             </div>
 
             <div class="space-y-8">
-                <!-- 导航 -->
+                <!-- Navigation: Academic Core -->
                 <div class="space-y-1">
                     <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 block ml-1">学术核心</label>
-                    <button id="navChat" onclick="switchView('chatView', this)" class="nav-item active w-full flex items-center gap-3 p-3 rounded-xl text-sm font-semibold transition-all text-left">
+                    <button id="navChat" onclick="switchView('chatView', this)" class="nav-item active w-full flex items-center gap-3 p-3 rounded-xl font-semibold transition-all text-left text-slate-600">
                         <i data-lucide="sparkles" class="w-4 h-4 text-indigo-500"></i> 协同中心
                     </button>
-                    <button id="navPaper" onclick="switchView('paperView', this)" class="nav-item w-full flex items-center gap-3 p-3 text-slate-600 hover:bg-slate-100 rounded-xl text-sm font-semibold transition-all text-left">
+                    <button id="navPaper" onclick="switchView('paperView', this)" class="nav-item w-full flex items-center gap-3 p-3 text-slate-600 hover:bg-slate-100 rounded-xl font-semibold transition-all text-left">
                         <i data-lucide="file-text" class="w-4 h-4"></i> 文献索引
                     </button>
-                    <button id="navDraft" onclick="switchView('draftView', this)" class="nav-item w-full flex items-center gap-3 p-3 text-slate-600 hover:bg-slate-100 rounded-xl text-sm font-semibold transition-all text-left">
+                    <button id="navDraft" onclick="switchView('draftView', this)" class="nav-item w-full flex items-center gap-3 p-3 text-slate-600 hover:bg-slate-100 rounded-xl font-semibold transition-all text-left">
                         <i data-lucide="layers" class="w-4 h-4"></i> 章节草稿
                     </button>
                 </div>
 
-                <!-- 研究资产 -->
+                <!-- Navigation: Research Assets -->
                 <div class="space-y-1">
                     <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 block ml-1">研究资产</label>
-                    <button id="navSkill" onclick="switchView('skillView', this)" class="nav-item w-full flex items-center gap-3 p-3 text-slate-600 hover:bg-slate-100 rounded-xl text-sm font-semibold transition-all text-left text-amber-500">
+                    <button id="navSkill" onclick="switchView('skillView', this)" class="nav-item w-full flex items-center gap-3 p-3 text-slate-600 hover:bg-slate-100 rounded-xl font-semibold transition-all text-left text-amber-500">
                         <i data-lucide="zap" class="w-4 h-4"></i> Skill 集
                     </button>
-                    <button id="navTool" onclick="switchView('toolView', this)" class="nav-item w-full flex items-center gap-3 p-3 text-slate-600 hover:bg-slate-100 rounded-xl text-sm font-semibold transition-all text-left text-blue-500">
+                    <button id="navTool" onclick="switchView('toolView', this)" class="nav-item w-full flex items-center gap-3 p-3 text-slate-600 hover:bg-slate-100 rounded-xl font-semibold transition-all text-left text-blue-500">
                         <i data-lucide="hammer" class="w-4 h-4"></i> 工具箱
                     </button>
-                    <button id="navEval" onclick="switchView('evalView', this); loadEvalDashboard()" class="nav-item w-full flex items-center gap-3 p-3 text-slate-600 hover:bg-slate-100 rounded-xl text-sm font-semibold transition-all text-left text-emerald-500">
+                    <button id="navEval" onclick="switchView('evalView', this); loadEvalDashboard()" class="nav-item w-full flex items-center gap-3 p-3 text-slate-600 hover:bg-slate-100 rounded-xl font-semibold transition-all text-left text-emerald-500">
                         <i data-lucide="activity" class="w-4 h-4"></i> AgentEval
                     </button>
                 </div>
 
-                <!-- 当前项目 -->
+                <!-- Agent Status -->
+                <div class="space-y-1 pt-4 border-t border-slate-100">
+                    <div class="flex items-center justify-between mb-3 pr-1">
+                        <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest block ml-1">子 Agent 状态</label>
+                        <button onclick="toggleModal('createAgentModal')" class="w-5 h-5 flex items-center justify-center bg-slate-100 text-slate-500 rounded hover:bg-indigo-600 hover:text-white transition-all shadow-sm">
+                            <i data-lucide="plus" class="w-3 h-3"></i>
+                        </button>
+                    </div>
+                    <div class="space-y-2" id="agentStatusList"></div>
+                </div>
+
+                <!-- Project Management -->
                 <div class="relative pt-4 border-t border-slate-100">
-                    <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 block ml-1">当前项目</label>
+                    <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 block ml-1">项目管理</label>
                     <div onclick="toggleDropdown('projectDropdown', event)" class="mt-2 bg-white border border-slate-200 rounded-xl p-3 flex items-center justify-between cursor-pointer hover:border-blue-400 transition-all shadow-sm">
                         <span id="currentProjectName" class="text-sm font-semibold text-slate-700 truncate">选择项目...</span>
                         <i data-lucide="chevron-down" class="w-4 h-4 text-slate-400"></i>
@@ -252,22 +304,21 @@
             </div>
         </div>
 
-        <!-- 项目进度 -->
-        <div class="p-6 border-t border-slate-100 space-y-4 bg-slate-50/50">
-            <div class="bg-white border border-slate-200 rounded-2xl p-4 shadow-sm">
-                <div class="flex justify-between items-center mb-2 text-[10px] font-bold uppercase">
-                    <span class="text-slate-500">共建项目记忆</span>
-                    <span id="progressPercent" class="text-blue-600">0%</span>
+        <!-- User Profile Card (replaces progress bar) -->
+        <div class="p-4 border-t border-slate-100 bg-slate-50/30">
+            <button onclick="switchView('settingsView', document.getElementById('navSettings'))" id="navSettings" class="nav-item w-full flex items-center gap-3 p-2.5 rounded-xl hover:bg-white transition-all text-left group">
+                <div class="w-9 h-9 rounded-full bg-gradient-to-tr from-indigo-500 to-blue-400 flex items-center justify-center text-white font-bold text-sm shadow-md">JD</div>
+                <div class="flex-1 min-w-0">
+                    <p class="font-bold text-slate-700 truncate">John Doe</p>
+                    <p class="text-slate-400 truncate uppercase tracking-tighter text-[10px]">Researcher</p>
                 </div>
-                <div class="w-full bg-slate-100 rounded-full h-1.5 overflow-hidden">
-                    <div id="globalProgressBar" class="bg-blue-600 h-1.5 rounded-full transition-all duration-700" style="width: 0%"></div>
-                </div>
-            </div>
+                <i data-lucide="settings" class="w-3.5 h-3.5 text-slate-300"></i>
+            </button>
         </div>
     </aside>
 
     <!-- Main Content -->
-    <main class="flex-1 flex flex-col relative overflow-hidden">
+    <main class="flex-1 flex flex-col relative overflow-hidden h-full">
 
         <!-- View 1: Chat -->
         <section id="chatView" class="view-section active">
@@ -320,7 +371,7 @@
 
         <!-- View: Paper Management -->
         <section id="paperView" class="view-section">
-            <div id="paperListView" class="flex flex-col h-full">
+            <div id="paperListView" class="flex flex-col h-full overflow-hidden">
                 <header class="h-16 border-b border-slate-200 bg-white flex items-center justify-between px-8">
                     <h2 class="font-bold text-slate-800">文献管理</h2>
                     <label class="bg-blue-600 text-white px-4 py-2 rounded-lg text-xs font-bold hover:bg-blue-700 transition-all flex items-center gap-2 cursor-pointer">
@@ -328,19 +379,16 @@
                         <input type="file" id="paperUpload" accept=".pdf" multiple class="hidden" onchange="handleUploadPapers()">
                     </label>
                 </header>
-                <div class="p-8 space-y-6 flex-1 overflow-auto">
-                    <div id="uploadProgress" class="hidden bg-white border border-blue-100 rounded-2xl p-4 flex items-center gap-4 animate__animated animate__fadeIn">
-                        <i data-lucide="file" class="text-blue-600"></i>
-                        <div class="flex-1">
-                            <div class="flex justify-between mb-1">
-                                <span class="text-xs font-bold text-blue-600">正在解析...</span>
-                                <span class="text-xs font-bold text-blue-600" id="progressText">0%</span>
-                            </div>
-                            <div class="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
-                                <div id="progressBar" class="bg-blue-600 h-full transition-all duration-300" style="width: 0%"></div>
-                            </div>
+                <div id="uploadProgress" class="hidden px-8 py-4 bg-white border-b border-blue-100">
+                    <div class="flex items-center gap-3">
+                        <div class="p-2 bg-blue-50 text-blue-600 rounded-lg"><i data-lucide="file-text" class="w-4 h-4"></i></div>
+                        <div class="flex-1 text-[10px] font-bold text-slate-700">
+                            <div class="flex justify-between mb-1"><span id="uploadFileName">解析中...</span><span class="text-blue-600" id="progressText">0%</span></div>
+                            <div class="w-full bg-slate-100 h-1 rounded-full overflow-hidden"><div id="progressBar" class="bg-blue-600 h-full" style="width: 0%"></div></div>
                         </div>
                     </div>
+                </div>
+                <div class="p-8 space-y-6 flex-1 overflow-auto">
                     <div id="paperListContainer" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"></div>
                 </div>
             </div>
@@ -355,12 +403,15 @@
                     </div>
                 </header>
                 <div class="flex-1 p-12 overflow-y-auto paper-scroll bg-white">
-                    <div class="max-w-3xl mx-auto space-y-8">
+                    <div class="max-w-3xl mx-auto space-y-6">
                         <h1 id="detailPaperDisplayTitle" class="text-3xl font-extrabold text-slate-900 leading-tight">标题</h1>
                         <p id="detailPaperAuthors" class="text-slate-500 font-medium">作者</p>
+                        <div id="detailPaperMeta" class="flex flex-wrap gap-2 text-xs"></div>
+                        <hr class="border-slate-200">
                         <div class="prose prose-slate max-w-none text-slate-700 leading-relaxed space-y-4">
-                            <p class="font-bold text-xl">Abstract</p>
-                            <p id="abstractContent">正在召回结构化内容...</p>
+                            <p class="font-bold text-xl text-slate-800">Full Content</p>
+                            <div id="paperDetailContent"><p class="text-slate-400">加载中...</p></div>
+                            <p id="abstractContent" class="hidden"></p>
                         </div>
                     </div>
                 </div>
@@ -369,7 +420,7 @@
 
         <!-- View: Draft Management -->
         <section id="draftView" class="view-section">
-            <div id="draftListView" class="flex flex-col h-full">
+            <div id="draftListView" class="flex flex-col h-full overflow-hidden">
                 <header class="h-16 border-b border-slate-200 bg-white flex items-center justify-between px-8">
                     <h2 class="font-bold text-slate-800">章节管理</h2>
                     <button onclick="toggleModal('newDraftModal')" class="bg-blue-600 text-white px-4 py-2 rounded-lg text-xs font-bold">新建章节</button>
@@ -408,16 +459,56 @@
             </div>
         </section>
 
-        <!-- View: Skill -->
+        <!-- View: Skill Library (with list + detail sub-pages) -->
         <section id="skillView" class="view-section">
-            <header class="h-16 border-b border-slate-200 bg-white px-8 flex items-center"><h2 class="font-bold text-slate-800">Skill 库</h2></header>
-            <div id="skillListContainer" class="p-8 grid grid-cols-3 gap-6 overflow-y-auto"></div>
+            <div id="skillListView" class="flex flex-col h-full overflow-hidden text-sm">
+                <header class="h-16 border-b border-slate-200 bg-white flex items-center justify-between px-8">
+                    <h2 class="font-bold text-slate-800">Skill 库 | 专家指令集</h2>
+                    <button onclick="openAddAssetModal('skill')" class="bg-amber-500 text-white px-4 py-2 rounded-lg text-xs font-bold hover:bg-amber-600">安装新 Skill</button>
+                </header>
+                <div id="skillListContainer" class="p-8 grid grid-cols-1 md:grid-cols-3 gap-6 overflow-y-auto scroll-thin"></div>
+            </div>
+            <div id="skillDetailView" class="hidden flex flex-col h-full animate__animated animate__fadeIn">
+                <header class="h-16 border-b border-slate-200 bg-white flex items-center px-8 gap-4">
+                    <button onclick="closeAssetDetail('skill')" class="p-2 hover:bg-slate-100 rounded-lg text-slate-500">
+                        <i data-lucide="arrow-left" class="w-5 h-5"></i>
+                    </button>
+                    <h3 class="font-bold text-slate-800">技能详情</h3>
+                </header>
+                <div class="flex-1 p-12 bg-white overflow-y-auto scroll-thin text-sm">
+                    <div class="max-w-2xl mx-auto space-y-8" id="skillIntro"></div>
+                </div>
+            </div>
         </section>
 
-        <!-- View: Tool -->
+        <!-- View: Tool Box (with list + detail sub-pages + import) -->
         <section id="toolView" class="view-section">
-            <header class="h-16 border-b border-slate-200 bg-white px-8 flex items-center"><h2 class="font-bold text-slate-800">工具箱</h2></header>
-            <div id="toolListContainer" class="p-8 grid grid-cols-3 gap-6 overflow-y-auto"></div>
+            <div id="toolListView" class="flex flex-col h-full overflow-hidden text-sm">
+                <header class="h-16 border-b border-slate-200 bg-white flex items-center justify-between px-8">
+                    <h2 class="font-bold text-slate-800">工具箱 | 分析脚本</h2>
+                    <input type="file" id="localToolInput" class="hidden" accept=".py" onchange="handleToolFileSelect(event)">
+                    <button onclick="document.getElementById('localToolInput').click()" class="bg-blue-600 text-white px-4 py-2 rounded-lg text-xs font-bold hover:bg-blue-700">导入 Python 工具</button>
+                </header>
+                <div id="toolImportProgress" class="hidden px-8 py-4 bg-white border-b border-blue-100 animate__animated animate__fadeInDown">
+                    <div class="flex items-center gap-3">
+                        <div class="p-2 bg-blue-50 text-blue-600 rounded-lg"><i data-lucide="binary" class="w-4 h-4"></i></div>
+                        <div class="flex-1 text-[10px] font-bold text-slate-700">
+                            <div class="flex justify-between mb-1"><span>正在注入脚本...</span><span class="text-blue-600" id="toolProgressText">0%</span></div>
+                            <div class="w-full bg-slate-100 h-1 rounded-full overflow-hidden"><div id="toolProgressBar" class="bg-blue-600 h-full transition-all duration-300" style="width: 0%"></div></div>
+                        </div>
+                    </div>
+                </div>
+                <div id="toolListContainer" class="p-8 grid grid-cols-1 md:grid-cols-3 gap-6 overflow-y-auto scroll-thin"></div>
+            </div>
+            <div id="toolDetailView" class="hidden flex flex-col h-full animate__animated animate__fadeIn">
+                <header class="h-16 border-b border-slate-200 bg-white flex items-center px-8 gap-4">
+                    <button onclick="closeAssetDetail('tool')" class="p-2 hover:bg-slate-100 rounded-lg text-slate-500">
+                        <i data-lucide="arrow-left" class="w-5 h-5"></i>
+                    </button>
+                    <h3 class="font-bold text-slate-800">工具控制台</h3>
+                </header>
+                <div class="flex-1 p-12 bg-white text-sm" id="toolActionContent"></div>
+            </div>
         </section>
 
         <!-- View: AgentEval Dashboard -->
@@ -505,7 +596,36 @@
             </div>
         </section>
 
-        <!-- Extraction Modal -->
+        <!-- View: Settings -->
+        <section id="settingsView" class="view-section">
+            <header class="h-16 border-b border-slate-200 bg-white px-8 flex items-center">
+                <h2 class="font-bold text-slate-800">设置与 API 管理</h2>
+            </header>
+            <div class="flex-1 p-12 bg-slate-50/50 overflow-y-auto scroll-thin text-sm">
+                <div class="max-w-4xl mx-auto space-y-8">
+                    <!-- User Profile Card -->
+                    <div class="bg-white rounded-3xl border border-slate-200 shadow-sm p-8 flex items-center gap-8">
+                        <div class="w-20 h-20 rounded-2xl bg-gradient-to-tr from-indigo-500 to-blue-400 flex items-center justify-center text-white text-3xl font-bold shadow-xl">JD</div>
+                        <div class="flex-1 space-y-1">
+                            <h3 class="text-xl font-bold text-slate-800">John Doe</h3>
+                            <p class="text-slate-500 text-xs">用户 ID: <b class="text-slate-700">CW-8829-X</b></p>
+                        </div>
+                    </div>
+                    <!-- API Keys -->
+                    <div class="space-y-4">
+                        <div class="flex justify-between items-center">
+                            <h4 class="font-bold text-slate-800">API 密钥管理</h4>
+                            <button onclick="toggleModal('keyModal')" class="text-xs text-blue-600 font-bold hover:underline">+ 新增配置</button>
+                        </div>
+                        <div id="apiKeyListContainer" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ============ Modals ============ -->
+
+        <!-- Extraction Modal (dimension-card grid layout) -->
         <div id="summaryModal" class="hidden absolute inset-0 z-50 flex items-center justify-center modal-overlay p-4 text-sm">
             <div class="bg-white w-full max-w-5xl h-[85vh] rounded-3xl shadow-2xl overflow-hidden flex flex-col">
                 <div class="p-6 border-b border-slate-100 flex justify-between bg-slate-50 items-center">
@@ -514,10 +634,10 @@
                 </div>
                 <div class="flex-1 overflow-hidden flex flex-col">
                     <div id="extractionConfigView" class="p-8 flex-1 overflow-y-auto text-center space-y-6">
-                        <div id="fieldContainer" class="flex flex-wrap gap-2 justify-center"></div>
+                        <div id="fieldContainer" class="grid grid-cols-4 gap-4 mb-10 text-left"></div>
                         <div class="max-w-md mx-auto flex gap-2">
-                            <input id="newFieldInput" type="text" placeholder="新增维度..." class="flex-1 border p-3 rounded-xl outline-none focus:ring-2 focus:ring-blue-500">
-                            <button onclick="addField()" class="bg-slate-100 px-4 rounded-xl font-bold">添加</button>
+                            <input id="newFieldInput" type="text" placeholder="新增维度..." class="flex-1 border p-3 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50">
+                            <button onclick="addField()" class="px-6 bg-slate-100 rounded-xl font-bold">添加</button>
                         </div>
                         <button onclick="runExtraction()" class="w-full max-w-md py-4 bg-indigo-600 text-white rounded-xl font-bold shadow-lg hover:bg-indigo-700">启动并行协作提取</button>
                     </div>
@@ -542,21 +662,82 @@
             </div>
         </div>
 
+        <!-- Create Agent Modal -->
+        <div id="createAgentModal" class="hidden absolute inset-0 z-50 flex items-center justify-center modal-overlay p-4">
+            <div class="bg-white w-full max-w-md rounded-3xl p-8 space-y-6 shadow-2xl animate__animated animate__zoomIn text-sm">
+                <div class="flex justify-between items-center">
+                    <h3 class="text-xl font-bold text-slate-800">构建自定义子 Agent</h3>
+                    <button onclick="toggleModal('createAgentModal')" class="p-2 hover:bg-slate-100 rounded-full transition-colors"><i data-lucide="x" class="w-5 h-5 text-slate-400"></i></button>
+                </div>
+                <div class="space-y-4 text-left">
+                    <input id="agentNameIn" type="text" placeholder="Agent 名称" class="w-full border p-3 rounded-xl bg-slate-50 outline-none">
+                    <textarea id="agentRoleIn" rows="3" placeholder="职责描述" class="w-full border p-3 rounded-xl bg-slate-50 outline-none resize-none"></textarea>
+                    <input id="agentIconIn" type="text" placeholder="图标 ID (如: brain)" class="w-full border p-3 rounded-xl bg-slate-50 outline-none">
+                </div>
+                <button onclick="confirmCreateAgent()" class="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold">初始化节点</button>
+            </div>
+        </div>
+
+        <!-- Add Asset Modal (with install progress) -->
+        <div id="addAssetModal" class="hidden absolute inset-0 z-50 flex items-center justify-center modal-overlay p-4 text-sm">
+            <div class="bg-white w-full max-w-lg rounded-3xl p-8 space-y-6 shadow-2xl animate__animated animate__zoomIn">
+                <div class="flex justify-between items-center text-left">
+                    <h3 class="text-xl font-bold text-slate-800" id="assetModalTitle">下载安装新能力</h3>
+                    <button onclick="toggleModal('addAssetModal')"><i data-lucide="x"></i></button>
+                </div>
+                <div class="space-y-4 text-left">
+                    <input id="skillNameIn" type="text" placeholder="技能名称..." class="w-full border p-3 rounded-xl outline-none bg-slate-50">
+                    <input id="skillUrlIn" type="text" placeholder="下载地址 (URL)..." class="w-full border p-3 rounded-xl outline-none bg-slate-50">
+                    <div class="grid grid-cols-2 gap-4">
+                        <select id="skillAgentIn" class="w-full border p-3 rounded-xl outline-none bg-slate-50"></select>
+                        <input id="skillIconIn" type="text" placeholder="图标 ID" class="w-full border p-3 rounded-xl outline-none bg-slate-50">
+                    </div>
+                    <textarea id="skillDescIn" rows="2" placeholder="简述..." class="w-full border p-3 rounded-xl outline-none bg-slate-50 resize-none"></textarea>
+                </div>
+                <div id="installProgress" class="hidden space-y-2 py-4 border-t">
+                    <div class="flex justify-between text-[10px] font-bold"><span class="text-blue-600 animate-pulse">正在拉取资源...</span><span id="installPercent">0%</span></div>
+                    <div class="w-full bg-slate-100 h-1 rounded-full overflow-hidden"><div id="installBar" class="bg-blue-600 h-full" style="width: 0%"></div></div>
+                </div>
+                <button onclick="confirmCreateSkill()" id="skillConfirmBtn" class="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold">开始部署</button>
+            </div>
+        </div>
+
+        <!-- Key Modal -->
+        <div id="keyModal" class="hidden absolute inset-0 z-50 flex items-center justify-center modal-overlay p-4 text-sm">
+            <div class="bg-white w-full max-w-md rounded-3xl p-8 space-y-5 shadow-2xl animate__animated animate__zoomIn">
+                <div class="flex justify-between items-center">
+                    <h3 class="text-lg font-bold">API 配置</h3>
+                    <button onclick="toggleModal('keyModal')"><i data-lucide="x"></i></button>
+                </div>
+                <input type="hidden" id="editingKeyId">
+                <input id="keyNameInput" class="w-full border p-3 rounded-xl bg-slate-50" placeholder="名称">
+                <input id="keyValueInput" type="password" class="w-full border p-3 rounded-xl bg-slate-50" placeholder="Key">
+                <input id="keyUrlInput" class="w-full border p-3 rounded-xl bg-slate-50" placeholder="Base URL">
+                <button onclick="saveApiKey()" class="w-full py-4 bg-blue-600 text-white rounded-2xl font-bold shadow-lg">保存</button>
+            </div>
+        </div>
+
         <!-- Create Draft Modal -->
         <div id="newDraftModal" class="hidden absolute inset-0 z-50 flex items-center justify-center modal-overlay p-4">
             <div class="bg-white w-full max-w-md rounded-3xl shadow-2xl p-8 space-y-4 animate__animated animate__zoomIn">
-                <h3 class="text-xl font-bold">新增章节</h3>
-                <input id="newDraftTitle" type="text" placeholder="标题" class="w-full border p-3 rounded-xl">
-                <button onclick="confirmCreateDraft()" class="w-full py-4 bg-blue-600 text-white rounded-2xl font-bold">创建并生成</button>
+                <div class="flex justify-between mb-2">
+                    <h3 class="text-xl font-bold">新增章节</h3>
+                    <button onclick="toggleModal('newDraftModal')"><i data-lucide="x"></i></button>
+                </div>
+                <input id="newDraftTitle" type="text" placeholder="标题" class="w-full border p-3 rounded-xl outline-none bg-slate-50">
+                <button onclick="confirmCreateDraft()" class="w-full py-4 bg-blue-600 text-white rounded-2xl font-bold">创建</button>
             </div>
         </div>
 
         <!-- Create Project Modal -->
         <div id="newProjectModal" class="hidden absolute inset-0 z-50 flex items-center justify-center modal-overlay p-4">
             <div class="bg-white w-full max-w-md rounded-3xl shadow-2xl p-8 space-y-4 animate__animated animate__zoomIn">
-                <h3 class="text-xl font-bold">新建项目</h3>
-                <input id="newProjectTitle" type="text" placeholder="项目名称" class="w-full border p-3 rounded-xl">
-                <input id="newProjectTopic" type="text" placeholder="研究主题" class="w-full border p-3 rounded-xl">
+                <div class="flex justify-between mb-2">
+                    <h3 class="text-xl font-bold">新建项目</h3>
+                    <button onclick="toggleModal('newProjectModal')"><i data-lucide="x"></i></button>
+                </div>
+                <input id="newProjectTitle" type="text" placeholder="项目名称" class="w-full border p-3 rounded-xl outline-none bg-slate-50">
+                <input id="newProjectTopic" type="text" placeholder="研究主题" class="w-full border p-3 rounded-xl outline-none bg-slate-50">
                 <button onclick="confirmCreateProject()" class="w-full py-4 bg-blue-600 text-white rounded-2xl font-bold">创建</button>
             </div>
         </div>

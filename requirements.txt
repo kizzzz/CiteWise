@@ -35,3 +35,7 @@ duckduckgo-search>=4.0.0
 
 # 数值计算
 numpy>=1.24.0
+
+# 多 Agent 编排
+langgraph>=0.2.0
+langchain-core>=0.2.0

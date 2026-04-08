@@ -237,7 +237,7 @@ async def delete_paper(paper_id: str, project_id: str = ""):
 @router.get("/papers/{paper_id}")
 async def get_paper_detail(paper_id: str):
     from src.core.memory import project_memory
-    from src.core.retriever import hybrid_search
+    from src.core.embedding import vector_store
 
     row = project_memory.get_paper_row(paper_id)
     if not row:
@@ -245,16 +245,39 @@ async def get_paper_detail(paper_id: str):
 
     paper = dict(row)
 
-    # 尝试从向量库获取摘要
+    # 从向量库获取该论文的所有 chunks
     try:
-        chunks = await asyncio.to_thread(
-            hybrid_search,
-            f"{paper.get('title', '')} abstract summary",
-            top_k=3, where={"paper_id": paper_id}
-        )
-        abstract = "\n".join(c.get("text", "") for c in chunks[:2]) if chunks else "暂无摘要"
-    except Exception:
-        abstract = "暂无摘要"
+        chunks = await asyncio.to_thread(vector_store.get_chunks_by_paper, paper_id)
+        if chunks:
+            # 按章节组织内容
+            sections = []
+            current_section = None
+            for c in chunks:
+                title = c.get("section_title", "全文")
+                if not current_section or current_section["title"] != title:
+                    current_section = {"title": title, "level": c.get("section_level", "L2"), "text": c["text"]}
+                    sections.append(current_section)
+                else:
+                    current_section["text"] += "\n\n" + c["text"]
 
-    paper["abstract"] = abstract
+            # 提取 abstract (L0 chunk)
+            abstract = ""
+            for s in sections:
+                if s["level"] == "L0":
+                    abstract = s["text"]
+                    break
+
+            paper["abstract"] = abstract
+            paper["sections"] = sections
+            paper["full_text"] = "\n\n".join(s["text"] for s in sections)
+        else:
+            paper["abstract"] = "暂无内容"
+            paper["sections"] = []
+            paper["full_text"] = ""
+    except Exception as e:
+        logger.error(f"获取论文 chunks 失败: {e}")
+        paper["abstract"] = "加载失败"
+        paper["sections"] = []
+        paper["full_text"] = ""
+
     return paper

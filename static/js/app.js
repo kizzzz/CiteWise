@@ -1,4 +1,9 @@
-/* CiteWise V3 — 前端逻辑 */
+/* CiteWise V3 — 前端逻辑 (合并原型交互 + 后端 API) */
+
+// ============ API Base URL (环境感知) ============
+const API_BASE = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+    ? ''  // 开发环境：同源
+    : 'https://citewise-backend.onrender.com';  // 生产环境：后端地址
 
 // ============ State ============
 let projects = [];
@@ -6,10 +11,36 @@ let currentProjectId = null;
 let extractionFields = ['研究方法', '核心算法', '数据集', '主要结论'];
 let currentDraftSection = null;
 let chatBusy = false;
+let currentDraftId = null;
+let currentDraftName = '';
+
+let agents = [
+    { id: 'research', name: 'Research', icon: 'search', status: 'READY', color: 'blue' },
+    { id: 'writing', name: 'Writing', icon: 'pen-tool', status: 'READY', color: 'purple' },
+    { id: 'analyst', name: 'Analyst', icon: 'hammer', status: 'READY', color: 'slate' }
+];
+
+let skills = [
+    { id: 1, title: "Abstract Polisher", desc: "摘要润色能力。", icon: "pen-tool", tag: "已安装", agent: "writing" },
+    { id: 2, title: "Citation Checker", desc: "引用格式与准确性验证。", icon: "check-circle", tag: "已安装", agent: "research" },
+    { id: 3, title: "Method Comparator", desc: "方法论对比分析。", icon: "git-compare", tag: "已安装", agent: "analyst" },
+    { id: 4, title: "Term Normalizer", desc: "术语一致性检查。", icon: "type", tag: "已安装", agent: "writing" }
+];
+
+let tools = [
+    { id: 1, title: "Statistical Plotter", desc: "自动根据文献数据绘制图表。", icon: "bar-chart-3", type: "脚本", trigger: "绘图, 画图, plot" },
+    { id: 2, title: "Citation Formatter", desc: "处理引用格式。", icon: "book-open", type: "脚本", trigger: "格式, 引用, cite" }
+];
+
+let apiKeys = [
+    { id: '1', name: 'Gemini 2.0 Flash', value: 'sk-xxxxxxxx', active: true }
+];
 
 // ============ Init ============
 document.addEventListener('DOMContentLoaded', async () => {
     lucide.createIcons();
+    renderAgentStatus();
+    renderApiKeyList();
     await loadProjects();
     renderSkillLibrary();
     renderToolLibrary();
@@ -39,7 +70,7 @@ async function api(method, path, body = null) {
         headers: { 'Content-Type': 'application/json' },
     };
     if (body) opts.body = JSON.stringify(body);
-    const resp = await fetch(`/api${path}`, opts);
+    const resp = await fetch(`${API_BASE}/api${path}`, opts);
     if (!resp.ok) {
         const err = await resp.text();
         throw new Error(err);
@@ -73,12 +104,6 @@ async function loadProjectData() {
     if (!currentProjectId) return;
     try {
         const state = await (await api('GET', `/projects/${currentProjectId}/state`)).json();
-        // Update progress bar
-        const total = state.paper_count + state.section_count + state.extraction_count;
-        const pct = Math.min(100, Math.round(total / 15 * 100));
-        document.getElementById('progressPercent').textContent = pct + '%';
-        document.getElementById('globalProgressBar').style.width = pct + '%';
-
         renderPapers(state.papers || []);
         renderDrafts(state.sections_with_id || []);
     } catch (e) {
@@ -97,7 +122,7 @@ function renderProjectList() {
 
 async function confirmCreateProject() {
     const name = document.getElementById('newProjectTitle').value.trim();
-    const topic = document.getElementById('newProjectTopic').value.trim();
+    const topic = document.getElementById('newProjectTopic') ? document.getElementById('newProjectTopic').value.trim() : '';
     if (!name) return;
     try {
         const resp = await (await api('POST', '/projects', { name, topic })).json();
@@ -119,9 +144,12 @@ function renderPapers(papers) {
         return;
     }
     c.innerHTML = papers.map(p =>
-        `<div onclick="openPaperDetail('${p.id}', '${escapeAttr(p.title)}', '${escapeAttr(p.authors || '')}')" class="bg-white border p-6 rounded-3xl shadow-sm hover:border-indigo-400 transition-all cursor-pointer">
-            <h4 class="font-bold text-slate-800">${escapeHtml(p.title || '未命名')}</h4>
-            <p class="text-xs text-slate-400 mt-2">${p.year || '?'} · ${escapeHtml((p.authors || '').substring(0, 20))}</p>
+        `<div onclick="openPaperDetail('${p.id}', '${escapeJs(p.title)}', '${escapeJs(p.authors || '')}')" class="interactive-card bg-white p-6 rounded-3xl border border-slate-100 shadow-sm animate__animated animate__fadeIn cursor-pointer">
+            <div class="w-10 h-10 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center mb-4">
+                <i data-lucide="file-text" class="w-5 h-5"></i>
+            </div>
+            <h4 class="font-bold text-slate-800 text-sm mb-1">${escapeHtml(p.title || '未命名')}</h4>
+            <p class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">${p.year || '?'} · ${escapeHtml((p.authors || '').substring(0, 20))}</p>
         </div>`
     ).join('');
     lucide.createIcons();
@@ -143,7 +171,7 @@ async function handleUploadPapers() {
     formData.append('project_id', currentProjectId);
 
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/api/papers/upload');
+    xhr.open('POST', `${API_BASE}/api/papers/upload`);
 
     xhr.upload.onprogress = (e) => {
         if (e.lengthComputable) {
@@ -176,25 +204,85 @@ async function handleUploadPapers() {
     xhr.send(formData);
 }
 
+function handlePaperSelect(e) {
+    if (e.target.files[0]) showToast('文献已选择', 'success');
+}
+
+function handleDragOver(e) {
+    e.preventDefault();
+}
+
+function handleDragLeave(e) {
+    e.preventDefault();
+}
+
+function handleDrop(e) {
+    e.preventDefault();
+    if (e.dataTransfer.files[0]) showToast('解析成功', 'success');
+}
+
 async function openPaperDetail(id, title, authors) {
-    document.getElementById('paperListView').classList.add('hidden');
-    document.getElementById('paperDetailView').classList.remove('hidden');
+    safeClassAction('paperListView', 'add', 'hidden');
+    safeClassAction('paperDetailView', 'remove', 'hidden');
     document.getElementById('detailPaperDisplayTitle').textContent = title;
-    document.getElementById('detailPaperAuthors').textContent = authors;
-    document.getElementById('abstractContent').textContent = '加载中...';
+
+    const abstractEl = document.getElementById('abstractContent');
+    const detailEl = document.getElementById('paperDetailContent');
+    const metaEl = document.getElementById('detailPaperMeta');
+
+    if (abstractEl) abstractEl.textContent = '';
+    if (detailEl) detailEl.innerHTML = '<p class="text-slate-400">加载中...</p>';
+    if (metaEl) metaEl.innerHTML = '';
 
     try {
         const paper = await (await api('GET', `/papers/${id}`)).json();
-        document.getElementById('abstractContent').textContent = paper.abstract || '暂无摘要';
+
+        // Render meta info badges
+        if (metaEl) {
+            const badges = [];
+            if (paper.year) badges.push(`<span class="inline-block px-2.5 py-1 rounded-full bg-blue-50 text-blue-700 font-semibold">${escapeHtml(String(paper.year))}</span>`);
+            if (paper.filename) badges.push(`<span class="inline-block px-2.5 py-1 rounded-full bg-slate-100 text-slate-600">${escapeHtml(paper.filename)}</span>`);
+            if (paper.chunk_count) badges.push(`<span class="inline-block px-2.5 py-1 rounded-full bg-purple-50 text-purple-700">${paper.chunk_count} chunks</span>`);
+            if (paper.indexed_at) badges.push(`<span class="inline-block px-2.5 py-1 rounded-full bg-green-50 text-green-700">${escapeHtml(paper.indexed_at)}</span>`);
+            metaEl.innerHTML = badges.join('');
+        }
+
+        // Render sections (full article content organized by section)
+        if (detailEl) {
+            const sections = paper.sections || [];
+            if (sections.length > 0) {
+                detailEl.innerHTML = sections.map(s => {
+                    const sectionClass = s.level === 'L0' ? 'bg-blue-50 border-blue-100' : 'bg-white border-slate-200';
+                    const headingSize = s.level === 'L0' ? 'text-lg' : 'text-base';
+                    const paragraphs = s.text.split(/\n{2,}/).filter(p => p.trim());
+                    return `
+                        <div class="border rounded-2xl p-6 ${sectionClass} space-y-3">
+                            <h3 class="font-bold text-slate-800 ${headingSize}">${escapeHtml(s.title)}</h3>
+                            ${paragraphs.map(p => `<p class="text-slate-600 leading-loose text-sm">${escapeHtml(p.trim())}</p>`).join('')}
+                        </div>`;
+                }).join('');
+            } else {
+                // Fallback: use abstract/full_text
+                const content = paper.full_text || paper.abstract || '暂无内容';
+                const paragraphs = content.split(/\n{2,}/).filter(p => p.trim());
+                detailEl.innerHTML = paragraphs.map(p =>
+                    `<p class="text-slate-600 leading-loose">${escapeHtml(p.trim())}</p>`
+                ).join('');
+            }
+        }
+
+        const authorsEl = document.getElementById('detailPaperAuthors');
+        if (authorsEl) authorsEl.textContent = authors || '';
     } catch (e) {
-        document.getElementById('abstractContent').textContent = '加载失败';
+        if (abstractEl) abstractEl.textContent = '加载失败';
+        if (detailEl) detailEl.innerHTML = '<p class="text-slate-400">加载失败</p>';
     }
     lucide.createIcons();
 }
 
 function closePaperDetail() {
-    document.getElementById('paperListView').classList.remove('hidden');
-    document.getElementById('paperDetailView').classList.add('hidden');
+    safeClassAction('paperListView', 'remove', 'hidden');
+    safeClassAction('paperDetailView', 'add', 'hidden');
 }
 
 // ============ Drafts ============
@@ -206,8 +294,9 @@ function renderDrafts(sections) {
         return;
     }
     c.innerHTML = sections.map(s =>
-        `<div onclick="openDraftEditor('${s.id}', '${escapeAttr(s.name)}')" class="bg-white border p-6 rounded-3xl shadow-sm hover:border-indigo-400 transition-all cursor-pointer">
-            <h4 class="font-bold">${escapeHtml(s.name)}</h4>
+        `<div onclick="openDraftEditor('${s.id}', '${escapeJs(s.name)}')" class="interactive-card bg-white p-6 rounded-3xl border border-slate-100 shadow-sm animate__animated animate__fadeIn cursor-pointer">
+            <h4 class="font-bold text-slate-800 text-sm mb-2">${escapeHtml(s.name)}</h4>
+            <p class="text-[10px] text-slate-400">最后编辑于：刚刚</p>
         </div>`
     ).join('');
     lucide.createIcons();
@@ -231,14 +320,11 @@ async function confirmCreateDraft() {
     }
 }
 
-let currentDraftId = null;
-let currentDraftName = '';
-
 async function openDraftEditor(id, name) {
     currentDraftId = id;
     currentDraftName = name;
-    document.getElementById('draftListView').classList.add('hidden');
-    document.getElementById('draftEditor').classList.remove('hidden');
+    safeClassAction('draftListView', 'add', 'hidden');
+    safeClassAction('draftEditor', 'remove', 'hidden');
     document.getElementById('editorTitle').textContent = name;
     document.getElementById('subChatWindow').innerHTML = '<div class="sub-bubble sub-bubble-ai">协作模式已激活。输入指令来修改章节内容。</div>';
 
@@ -254,8 +340,8 @@ async function openDraftEditor(id, name) {
 }
 
 function closeDraftEditor() {
-    document.getElementById('draftListView').classList.remove('hidden');
-    document.getElementById('draftEditor').classList.add('hidden');
+    safeClassAction('draftListView', 'remove', 'hidden');
+    safeClassAction('draftEditor', 'add', 'hidden');
     loadProjectData();
 }
 
@@ -327,12 +413,9 @@ async function handleSendChat() {
         <div class="flex-1 space-y-4">
             <div class="bg-indigo-50 border border-indigo-100 p-6 rounded-3xl rounded-tl-none">
                 <div class="flex items-center gap-2 mb-4">
-                    <span class="text-[10px] font-bold text-indigo-600 uppercase tracking-widest">协同中枢 Orchestrator 正在思考</span>
+                    <span class="text-[10px] font-bold text-indigo-600 uppercase tracking-widest">Multi-Agent 协作中</span>
                 </div>
-                <div class="space-y-3 text-xs text-indigo-900/70" id="${collabId}-steps">
-                    <div class="collab-step active" id="${collabId}-s1">分析学术意图并拆解子任务...</div>
-                    <div class="collab-step" id="${collabId}-s2">Research Agent 正在执行多源检索...</div>
-                </div>
+                <div class="space-y-1 text-xs text-indigo-900/70" id="${collabId}-timeline"></div>
             </div>
             <div id="${collabId}-res" class="bg-white border border-slate-200 p-6 rounded-3xl text-sm leading-relaxed hidden shadow-sm"></div>
         </div>`;
@@ -340,12 +423,25 @@ async function handleSendChat() {
     lucide.createIcons();
     scrollChat();
 
+    // Check for tool trigger words and show tool-invocation-card
+    const matchedTool = tools.find(t => t.trigger.split(', ').some(kw => text.includes(kw)));
+
     try {
-        const response = await fetch('/api/chat', {
+        const response = await fetch(`${API_BASE}/api/chat`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ message: text, project_id: currentProjectId }),
         });
+
+        // If a tool was matched, show the invocation card
+        if (matchedTool) {
+            const toolCard = document.createElement('div');
+            toolCard.className = 'tool-invocation-card text-xs animate__animated animate__fadeIn';
+            toolCard.innerHTML = `<div class="p-2 bg-indigo-600 text-white rounded-lg"><i data-lucide="terminal" class="w-4 h-4"></i></div><div class="flex-1"><p class="font-bold">Orchestrator: 调用固定工具</p><p class="text-slate-500">Analyst Agent 执行脚本: <b>${escapeHtml(matchedTool.title)}</b></p></div>`;
+            container.appendChild(toolCard);
+            lucide.createIcons();
+            scrollChat();
+        }
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
@@ -371,6 +467,17 @@ async function handleSendChat() {
                 if (eventType && data) {
                     try { data = JSON.parse(data); } catch { /* keep as string */ }
                     events.push({ type: eventType, data });
+
+                    // Real-time agent timeline in collab bubble
+                    if (eventType === 'agent_start' && data.agent) {
+                        appendTimelineStep(collabId + '-timeline', data.agent, 'running', data.detail);
+                        // Update agent status in left sidebar
+                        updateAgentStatus(data.agent, 'RUNNING');
+                    }
+                    if (eventType === 'agent_end' && data.agent) {
+                        updateTimelineStep(collabId + '-timeline', data.agent, 'done', data.detail, data.duration_ms);
+                        updateAgentStatus(data.agent, 'READY');
+                    }
                 }
             }
         }
@@ -378,12 +485,7 @@ async function handleSendChat() {
         // Process collected events
         let content = '';
         for (const evt of events) {
-            if (evt.type === 'thinking') {
-                completeStep(collabId + '-s1');
-            }
             if (evt.type === 'content' && evt.data) {
-                completeStep(collabId + '-s1');
-                completeStep(collabId + '-s2');
                 content = evt.data.content || '';
             }
             if (evt.type === 'section') {
@@ -405,6 +507,57 @@ async function handleSendChat() {
     }
 
     chatBusy = false;
+}
+
+// ---- Agent status in left sidebar ----
+function updateAgentStatus(agentName, status) {
+    const mapping = {
+        'Supervisor': null,
+        'Researcher': 'research',
+        'research': 'research',
+        'Responder': null,
+        'Writer': 'writing',
+        'writing': 'writing',
+        'Analyst': 'analyst',
+        'analyst': 'analyst'
+    };
+    const agentId = mapping[agentName];
+    if (!agentId) return;
+    const agent = agents.find(a => a.id === agentId);
+    if (agent) {
+        agent.status = status;
+        renderAgentStatus();
+    }
+}
+
+// ---- Agent Timeline helpers (inline collab bubble) ----
+function appendTimelineStep(containerId, agent, status, detail) {
+    const c = document.getElementById(containerId);
+    if (!c) return;
+    const stepId = containerId + '-' + agent;
+    if (document.getElementById(stepId)) return; // already exists
+    const colors = {
+        Supervisor: 'border-indigo-500', Researcher: 'border-blue-500',
+        Responder: 'border-violet-500', Writer: 'border-amber-500', Analyst: 'border-emerald-500',
+    };
+    const cls = status === 'running' ? 'collab-step active' : 'collab-step';
+    const div = document.createElement('div');
+    div.id = stepId;
+    div.className = `${cls}`;
+    div.style.borderLeftColor = (colors[agent] || 'border-slate-400').replace('border-', '');
+    div.textContent = `${agent}: ${detail || '处理中...'}`;
+    c.appendChild(div);
+}
+
+function updateTimelineStep(containerId, agent, status, detail, durationMs) {
+    const stepId = containerId + '-' + agent;
+    const el = document.getElementById(stepId);
+    if (!el) {
+        appendTimelineStep(containerId, agent, status, detail);
+        return;
+    }
+    el.className = 'collab-step completed';
+    el.textContent = `${agent}: ${detail || '完成'}${durationMs ? ` (${durationMs}ms)` : ''}`;
 }
 
 async function streamCategorizedText(target, fullText) {
@@ -456,7 +609,7 @@ function appendUserMessage(text) {
         <div class="w-10 h-10 rounded-xl bg-slate-800 flex items-center justify-center text-white shrink-0 shadow-lg">
             <i data-lucide="user"></i>
         </div>
-        <div class="bg-blue-600 text-white p-5 rounded-3xl rounded-tr-none text-sm max-w-[80%]">${escapeHtml(text)}</div>`;
+        <div class="bg-blue-600 text-white p-5 rounded-3xl rounded-tr-none text-sm max-w-[80%] shadow-md">${escapeHtml(text)}</div>`;
     c.appendChild(d);
     lucide.createIcons();
     scrollChat();
@@ -477,13 +630,20 @@ function renderFields() {
     const c = document.getElementById('fieldContainer');
     if (!c) return;
     c.innerHTML = extractionFields.map((f, i) =>
-        `<div class="field-pill active">${escapeHtml(f)} <button onclick="removeField(${i})" class="ml-1 hover:text-red-500">&times;</button></div>`
+        `<div class="dimension-card relative group bg-white border border-slate-200 rounded-2xl p-4 shadow-sm text-center animate__animated animate__fadeIn">
+            <div class="text-[9px] font-extrabold text-slate-300 uppercase tracking-tighter mb-1">Dimension</div>
+            <div class="text-sm font-bold text-slate-700">${escapeHtml(f)}</div>
+            <button onclick="extractionFields.splice(${i},1);renderFields();event.stopPropagation();" class="absolute -top-2 -right-2 w-6 h-6 bg-white border border-slate-100 rounded-full flex items-center justify-center text-slate-400 hover:text-red-500 shadow-sm opacity-0 group-hover:opacity-100 transition-opacity">
+                <i data-lucide="x" class="w-3 h-3"></i>
+            </button>
+        </div>`
     ).join('');
+    lucide.createIcons();
 }
 
 function addField() {
     const v = document.getElementById('newFieldInput').value.trim();
-    if (v) {
+    if (v && !extractionFields.includes(v)) {
         extractionFields.push(v);
         document.getElementById('newFieldInput').value = '';
         renderFields();
@@ -527,6 +687,18 @@ async function runExtraction() {
     } catch (e) {
         document.getElementById('extractionLoader').classList.add('hidden');
         showToast('提取失败: ' + e.message, 'error');
+    }
+    lucide.createIcons();
+}
+
+function runCustomExtraction() {
+    safeClassAction('extractionConfigView', 'add', 'hidden');
+    safeClassAction('extractionResultView', 'remove', 'hidden');
+    const head = document.getElementById('extractionTableHead');
+    const body = document.getElementById('extractionTableBody');
+    if (head && body) {
+        head.innerHTML = `<tr class="border-b bg-slate-50/50 text-[10px] font-bold uppercase tracking-wider"><th class="p-6">文献</th>${extractionFields.map(f => `<th class="p-6">${escapeHtml(f)}</th>`).join('')}</tr>`;
+        body.innerHTML = '<tr class="border-b text-xs text-slate-600"><td class="p-6" colspan="' + (extractionFields.length + 1) + '">正在提取中...</td></tr>';
     }
     lucide.createIcons();
 }
@@ -626,21 +798,53 @@ function renderTrendChart(trends) {
     document.getElementById('trendDateEnd').textContent = trends[trends.length - 1].date;
 }
 
+// ============ Agent Status (Left Sidebar) ============
+function renderAgentStatus() {
+    const c = document.getElementById('agentStatusList');
+    if (!c) return;
+    c.innerHTML = agents.map(a => {
+        const statusColor = a.status === 'RUNNING' ? 'text-amber-500' : 'text-green-500';
+        return `<div class="agent-item flex items-center justify-between p-2 px-3 bg-slate-50/50 rounded-lg border border-slate-100 mb-2 text-[11px]">
+            <span class="flex items-center gap-2">
+                <i data-lucide="${a.icon}" class="w-3 h-3 text-${a.color}-500"></i>
+                ${escapeHtml(a.name)}
+            </span>
+            <span class="font-bold ${statusColor} uppercase text-[9px]">${a.status}</span>
+        </div>`;
+    }).join('');
+    lucide.createIcons();
+}
+
+function confirmCreateAgent() {
+    const name = document.getElementById('agentNameIn').value.trim();
+    if (!name) return;
+    const icon = document.getElementById('agentIconIn').value.trim() || 'cpu';
+    agents.push({
+        id: Date.now().toString(),
+        name: name,
+        icon: icon,
+        status: 'READY',
+        color: 'indigo'
+    });
+    renderAgentStatus();
+    toggleModal('createAgentModal');
+    showToast('Agent 节点就绪', 'success');
+}
+
 // ============ Skill & Tool Library ============
 function renderSkillLibrary() {
     const c = document.getElementById('skillListContainer');
     if (!c) return;
-    const skills = [
-        { name: 'Abstract Polisher', desc: '摘要润色与学术化', icon: 'zap', color: 'amber' },
-        { name: 'Citation Checker', desc: '引用格式与准确性验证', icon: 'check-circle', color: 'green' },
-        { name: 'Method Comparator', desc: '方法论对比分析', icon: 'git-compare', color: 'blue' },
-        { name: 'Term Normalizer', desc: '术语一致性检查', icon: 'type', color: 'purple' },
-    ];
     c.innerHTML = skills.map(s =>
-        `<div class="bg-white border p-6 rounded-3xl shadow-sm hover:border-indigo-400 transition-all cursor-pointer">
-            <div class="p-2 bg-${s.color}-50 text-${s.color}-600 rounded-lg w-fit mb-4"><i data-lucide="${s.icon}"></i></div>
-            <h4 class="font-bold">${s.name}</h4>
-            <p class="text-xs text-slate-400 mt-1">${s.desc}</p>
+        `<div onclick="openSkillDetail(${s.id})" class="interactive-card bg-white p-6 rounded-3xl border border-slate-100 shadow-sm group animate__animated animate__fadeIn cursor-pointer">
+            <div class="flex justify-between items-start mb-4">
+                <div class="p-2 bg-amber-50 text-amber-600 rounded-lg">
+                    <i data-lucide="${s.icon}" class="w-5 h-5"></i>
+                </div>
+                <span class="text-[7px] uppercase font-bold text-blue-500 mt-2">On ${escapeHtml(s.agent)} Agent</span>
+            </div>
+            <h4 class="font-bold text-slate-800 text-sm mb-1">${escapeHtml(s.title)}</h4>
+            <p class="text-[10px] text-slate-500">${escapeHtml(s.desc)}</p>
         </div>`
     ).join('');
     lucide.createIcons();
@@ -649,30 +853,255 @@ function renderSkillLibrary() {
 function renderToolLibrary() {
     const c = document.getElementById('toolListContainer');
     if (!c) return;
-    const tools = [
-        { name: 'Data Plotter', desc: '数据可视化图表生成', icon: 'bar-chart-2', color: 'blue' },
-        { name: 'PDF Parser', desc: '高级 PDF 解析与表格提取', icon: 'file-text', color: 'red' },
-        { name: 'Web Search', desc: '联网学术搜索', icon: 'globe', color: 'green' },
-        { name: 'Export Engine', desc: 'Word/Markdown/Excel 导出', icon: 'download', color: 'indigo' },
-    ];
     c.innerHTML = tools.map(t =>
-        `<div class="bg-white border p-6 rounded-3xl shadow-sm hover:border-indigo-400 transition-all cursor-pointer">
-            <div class="p-2 bg-${t.color}-50 text-${t.color}-600 rounded-lg w-fit mb-4"><i data-lucide="${t.icon}"></i></div>
-            <h4 class="font-bold">${t.name}</h4>
-            <p class="text-xs text-slate-400 mt-1">${t.desc}</p>
+        `<div onclick="openToolDetail(${t.id})" class="interactive-card bg-white p-6 rounded-3xl border border-slate-100 shadow-sm group animate__animated animate__fadeIn cursor-pointer">
+            <div class="flex justify-between mb-4">
+                <div class="p-2 bg-blue-50 text-blue-600 rounded-lg">
+                    <i data-lucide="${t.icon}" class="w-5 h-5"></i>
+                </div>
+                <span class="px-2 py-1 bg-slate-50 text-slate-400 text-[8px] font-bold rounded">Fixed</span>
+            </div>
+            <h4 class="font-bold text-slate-800 text-sm mb-1">${escapeHtml(t.title)}</h4>
+            <p class="text-[10px] text-slate-500">${escapeHtml(t.desc)}</p>
+            <div class="mt-4 pt-3 border-t border-slate-50 text-[8px] text-slate-400 font-bold uppercase">指令词: ${escapeHtml(t.trigger)}</div>
         </div>`
     ).join('');
     lucide.createIcons();
 }
 
+function openSkillDetail(id) {
+    const s = skills.find(x => x.id === id);
+    if (!s) return;
+    safeClassAction('skillListView', 'add', 'hidden');
+    safeClassAction('skillDetailView', 'remove', 'hidden');
+    const intro = document.getElementById('skillIntro');
+    if (intro) intro.innerHTML = `
+        <div class="p-8 bg-amber-50 rounded-3xl text-center">
+            <i data-lucide="${s.icon}" class="w-10 h-10 mx-auto mb-4 text-amber-500"></i>
+            <h2 class="text-2xl font-bold">${escapeHtml(s.title)}</h2>
+            <p class="text-xs text-slate-400 mt-2 uppercase font-bold">Inject to ${escapeHtml(s.agent)}</p>
+        </div>
+        <div class="bg-white border border-slate-200 rounded-2xl p-6 space-y-4">
+            <h3 class="font-bold text-slate-700">描述</h3>
+            <p class="text-slate-500 text-sm">${escapeHtml(s.desc)}</p>
+        </div>
+        <div class="flex gap-4">
+            <button onclick="showToast('处理完成')" class="flex-1 py-4 bg-amber-500 text-white rounded-2xl font-bold shadow-lg">启动</button>
+            <button onclick="deleteSkill(${s.id})" class="py-4 px-6 bg-white border border-red-200 text-red-500 rounded-2xl font-bold hover:bg-red-50 transition-all">删除</button>
+        </div>
+    `;
+    lucide.createIcons();
+}
+
+function deleteSkill(id) {
+    skills = skills.filter(s => s.id !== id);
+    renderSkillLibrary();
+    closeAssetDetail('skill');
+    showToast('Skill 已删除');
+}
+
+function openToolDetail(id) {
+    const t = tools.find(x => x.id === id);
+    if (!t) return;
+    safeClassAction('toolListView', 'add', 'hidden');
+    safeClassAction('toolDetailView', 'remove', 'hidden');
+
+    const code = t.code || `# CiteWise Tool: ${t.title}\n# Trigger: ${t.trigger}\n\n# ${t.desc}\n\ndef run(context):\n    """Execute this tool with the given context."""\n    # TODO: Implement tool logic\n    pass`;
+
+    const action = document.getElementById('toolActionContent');
+    if (action) action.innerHTML = `
+        <div class="space-y-6 max-w-4xl mx-auto">
+            <div class="p-6 bg-blue-50 rounded-3xl flex items-center gap-4">
+                <div class="p-3 bg-blue-100 rounded-xl"><i data-lucide="${t.icon}" class="w-6 h-6 text-blue-600"></i></div>
+                <div class="flex-1">
+                    <h2 class="text-xl font-bold text-slate-800">${escapeHtml(t.title)}</h2>
+                    <p class="text-xs text-slate-500">${escapeHtml(t.desc)}</p>
+                </div>
+            </div>
+            <div class="bg-white border border-slate-200 rounded-2xl p-4">
+                <div class="flex justify-between items-center mb-3">
+                    <span class="text-xs font-bold text-slate-500 uppercase">脚本代码</span>
+                    <span class="text-[10px] font-bold text-slate-400">指令词: ${escapeHtml(t.trigger)}</span>
+                </div>
+                <textarea id="toolCodeEditor" class="w-full h-64 bg-slate-900 text-green-400 p-4 rounded-xl font-mono text-xs resize-y outline-none" spellcheck="false">${escapeHtml(code)}</textarea>
+            </div>
+            <div class="flex gap-4">
+                <button onclick="saveToolCode(${t.id})" class="flex-1 py-4 bg-blue-600 text-white rounded-2xl font-bold shadow-lg">保存修改</button>
+                <button onclick="runToolScript(${t.id})" class="py-4 px-6 bg-emerald-600 text-white rounded-2xl font-bold shadow-lg">运行脚本</button>
+                <button onclick="deleteTool(${t.id})" class="py-4 px-6 bg-white border border-red-200 text-red-500 rounded-2xl font-bold hover:bg-red-50">删除</button>
+            </div>
+        </div>
+    `;
+    lucide.createIcons();
+}
+
+function deleteTool(id) {
+    tools = tools.filter(t => t.id !== id);
+    renderToolLibrary();
+    closeAssetDetail('tool');
+    showToast('工具已删除');
+}
+
+function saveToolCode(id) {
+    const t = tools.find(x => x.id === id);
+    const editor = document.getElementById('toolCodeEditor');
+    if (t && editor) {
+        t.code = editor.value;
+        showToast('脚本已保存');
+    }
+}
+
+function runToolScript(id) {
+    const t = tools.find(x => x.id === id);
+    if (t) showToast(`运行 ${t.title}...`);
+}
+
+function handleToolFileSelect(e) {
+    const file = e.target.files[0];
+    if (!file || !file.name.endsWith('.py')) {
+        showToast('请选择 .py 文件', 'error');
+        return;
+    }
+    const up = document.getElementById('toolImportProgress');
+    if (!up) return;
+    up.classList.remove('hidden');
+
+    const reader = new FileReader();
+    reader.onload = function(ev) {
+        const fileContent = ev.target.result;
+        let v = 0;
+        const timer = setInterval(() => {
+            v += 10;
+            const bar = document.getElementById('toolProgressBar');
+            const txt = document.getElementById('toolProgressText');
+            if (bar) bar.style.width = v + '%';
+            if (txt) txt.innerText = v + '%';
+            if (v >= 100) {
+                clearInterval(timer);
+                setTimeout(() => {
+                    up.classList.add('hidden');
+                    tools.unshift({
+                        id: Date.now(),
+                        title: file.name.split('.')[0],
+                        desc: '导入的 Python 工具。',
+                        icon: 'binary',
+                        type: '本地',
+                        trigger: '运行, run',
+                        code: fileContent
+                    });
+                    renderToolLibrary();
+                    showToast('工具脚本注入成功', 'success');
+                }, 500);
+            }
+        }, 100);
+    };
+    reader.readAsText(file);
+}
+
+function openAddAssetModal(type) {
+    const modal = document.getElementById('addAssetModal');
+    if (!modal) return;
+    const titleEl = document.getElementById('assetModalTitle');
+    if (titleEl) titleEl.innerText = type === 'skill' ? '下载安装 Skill' : '添加工具脚本';
+    const select = document.getElementById('skillAgentIn');
+    if (select) select.innerHTML = agents.map(a => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join('');
+    modal.classList.remove('hidden');
+    lucide.createIcons();
+}
+
+function confirmCreateSkill() {
+    const name = document.getElementById('skillNameIn').value.trim();
+    const url = document.getElementById('skillUrlIn').value.trim();
+    if (!name || !url) return;
+    const box = document.getElementById('installProgress');
+    const bar = document.getElementById('installBar');
+    const percent = document.getElementById('installPercent');
+    const btn = document.getElementById('skillConfirmBtn');
+    if (!box || !bar || !percent || !btn) return;
+
+    btn.disabled = true;
+    box.classList.remove('hidden');
+    let v = 0;
+    const timer = setInterval(() => {
+        v += 10;
+        bar.style.width = v + '%';
+        percent.innerText = v + '%';
+        if (v >= 100) {
+            clearInterval(timer);
+            const agentSelect = document.getElementById('skillAgentIn');
+            skills.push({
+                id: Date.now(),
+                title: name,
+                agent: agentSelect ? agentSelect.value : 'research',
+                tag: '已下载',
+                icon: 'zap',
+                desc: '部署的能力。'
+            });
+            renderSkillLibrary();
+            setTimeout(() => {
+                toggleModal('addAssetModal');
+                btn.disabled = false;
+                box.classList.add('hidden');
+                bar.style.width = '0%';
+                percent.innerText = '0%';
+                showToast('安装成功', 'success');
+            }, 500);
+        }
+    }, 80);
+}
+
+// ============ API Key Management ============
+function renderApiKeyList() {
+    const c = document.getElementById('apiKeyListContainer');
+    if (!c) return;
+    c.innerHTML = apiKeys.map(k =>
+        `<div class="p-5 bg-white border border-slate-200 rounded-2xl shadow-sm cursor-pointer ${k.active ? 'key-card-active' : ''}" onclick="switchKey('${k.id}')">
+            <div class="font-bold text-sm text-slate-800">${escapeHtml(k.name)}</div>
+            <div class="text-[10px] text-slate-400 font-mono">••••${escapeHtml(k.value.slice(-4))}</div>
+        </div>`
+    ).join('');
+}
+
+function saveApiKey() {
+    toggleModal('keyModal');
+    showToast('配置已保存', 'success');
+}
+
+function switchKey(id) {
+    apiKeys.forEach(k => { k.active = (k.id === id); });
+    renderApiKeyList();
+    showToast('模型切换成功', 'success');
+}
+
+// ============ TTS Placeholder ============
+function simulateTTS() {
+    showToast('生成播报中...', 'success');
+}
+
 // ============ UI Helpers ============
+function safeClassAction(id, action, className) {
+    const el = document.getElementById(id);
+    if (el) el.classList[action](className);
+}
+
+function closeAssetDetail(type) {
+    safeClassAction(`${type}ListView`, 'remove', 'hidden');
+    safeClassAction(`${type}DetailView`, 'add', 'hidden');
+}
+
 function switchView(id, btn) {
     document.querySelectorAll('.view-section').forEach(s => s.classList.remove('active'));
     document.querySelectorAll('.nav-item').forEach(i => {
         i.classList.remove('active', 'bg-blue-50', 'text-blue-700');
     });
-    document.getElementById(id).classList.add('active');
+    const target = document.getElementById(id);
+    if (target) target.classList.add('active');
     if (btn) btn.classList.add('active');
+
+    closePaperDetail();
+    closeDraftEditor();
+    closeAssetDetail('skill');
+    closeAssetDetail('tool');
     closeAllDropdowns();
 }
 
@@ -713,4 +1142,10 @@ function escapeHtml(str) {
 function escapeAttr(str) {
     if (!str) return '';
     return str.replace(/&/g, '&amp;').replace(/'/g, '&#39;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/`/g, '&#96;');
+}
+
+/** Escape string for use inside JS single-quoted strings within HTML onclick attributes */
+function escapeJs(str) {
+    if (!str) return '';
+    return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"');
 }

@@ -1,4 +1,4 @@
-"""聊天路由 — SSE 流式响应"""
+"""聊天路由 — LangGraph 流式响应（agent_start/agent_end + 内容）"""
 import asyncio
 import json
 import logging
@@ -15,10 +15,13 @@ router = APIRouter()
 
 MAX_MESSAGE_LENGTH = 2000
 
+# 需要监听的 LangGraph 节点名
+_AGENT_NODES = {"supervisor", "researcher", "responder", "writer", "analyst"}
+
 
 @router.post("/chat")
 async def chat_endpoint(req: ChatRequest):
-    """主对话 — SSE 流式返回"""
+    """主对话 — LangGraph astream_events 流式返回"""
     if not req.message or not req.message.strip():
         raise HTTPException(status_code=422, detail="Message must not be empty")
     if len(req.message) > MAX_MESSAGE_LENGTH:
@@ -28,72 +31,108 @@ async def chat_endpoint(req: ChatRequest):
 
     async def event_generator():
         try:
-            from src.core.agents.coordinator import coordinator
+            from src.core.async_graph import get_async_graph
 
-            # 在线程池中运行同步的 coordinator
+            graph = get_async_graph()
+            config = {"configurable": {"thread_id": req.project_id}}
+            input_state = {
+                "user_input": req.message,
+                "project_id": req.project_id,
+                "thinking_steps": [],
+                "agent_events": [],
+            }
+
             start_time = time.time()
-            result = await asyncio.to_thread(
-                coordinator.process, req.message, req.project_id
-            )
-            elapsed = int((time.time() - start_time) * 1000)
+            final_result = {}
 
-            # 发送思考步骤
-            for step in result.get("thinking_steps", []):
+            async for event in graph.astream_events(
+                input_state, config=config, version="v2"
+            ):
+                kind = event["event"]
+                name = event.get("name", "")
+
+                # Agent 节点开始
+                if kind == "on_chain_start" and name in _AGENT_NODES:
+                    output_state = event.get("data", {}).get("input", {})
+                    agent_events = output_state.get("agent_events", []) if isinstance(output_state, dict) else []
+                    # 从已有的 agent_events 中取最后一条作为描述
+                    last = agent_events[-1] if agent_events else {}
+                    yield {
+                        "event": "agent_start",
+                        "data": json.dumps({
+                            "agent": name.capitalize(),
+                            "detail": last.get("detail", f"{name} 启动中..."),
+                        }, ensure_ascii=False),
+                    }
+
+                # Agent 节点完成
+                elif kind == "on_chain_end" and name in _AGENT_NODES:
+                    output = event.get("data", {}).get("output", {})
+                    if isinstance(output, dict):
+                        final_result.update(output)
+                        agent_events = output.get("agent_events", [])
+                        last = agent_events[-1] if agent_events else {}
+                        yield {
+                            "event": "agent_end",
+                            "data": json.dumps({
+                                "agent": name.capitalize(),
+                                "detail": last.get("detail", "完成"),
+                                "duration_ms": last.get("duration_ms", 0),
+                            }, ensure_ascii=False),
+                        }
+
+            # ---- 发送最终结果 ----
+            # 思考步骤
+            for step in final_result.get("thinking_steps", []):
                 yield {"event": "thinking", "data": json.dumps({"step": step}, ensure_ascii=False)}
 
-            # 发送内容
-            content = result.get("content", "")
-            rtype = result.get("type", "text")
-
+            # 内容
+            content = final_result.get("content", "")
+            rtype = final_result.get("response_type", final_result.get("type", "text"))
             if content:
                 yield {"event": "content", "data": json.dumps({
-                    "content": content,
-                    "type": rtype,
+                    "content": content, "type": rtype,
                 }, ensure_ascii=False)}
 
-            # 发送引用信息
-            citations = result.get("citations")
+            # 引用
+            citations = final_result.get("citations")
             if citations:
                 yield {"event": "citations", "data": json.dumps(citations, ensure_ascii=False)}
 
-            sources = result.get("sources")
+            sources = final_result.get("sources")
             if sources:
                 yield {"event": "sources", "data": json.dumps(sources, ensure_ascii=False)}
 
-            # 如果是章节生成，发送 section_name
-            section_name = result.get("section_name")
+            # 章节名
+            section_name = final_result.get("section_name")
             if section_name:
                 yield {"event": "section", "data": json.dumps({
-                    "section_name": section_name,
-                    "content": content,
-                    "type": rtype,
+                    "section_name": section_name, "content": content, "type": rtype,
                 }, ensure_ascii=False)}
 
-            # 发送内容来源标注信息
-            content_sources = result.get("content_sources")
+            # 来源标注
+            content_sources = final_result.get("content_sources")
             if content_sources:
-                yield {"event": "content_sources", "data": json.dumps(
-                    content_sources, ensure_ascii=False
-                )}
+                yield {"event": "content_sources", "data": json.dumps(content_sources, ensure_ascii=False)}
 
+            elapsed = int((time.time() - start_time) * 1000)
             yield {"event": "done", "data": json.dumps({"type": rtype}, ensure_ascii=False)}
 
-            # Record eval metrics
+            # Eval metrics
             session_id = f"s_{req.project_id}_{int(time.time())}"
             record_eval(
                 session_id=session_id,
                 project_id=req.project_id,
-                intent=result.get("intent", "unknown"),
-                task_type=result.get("type", "text"),
+                intent=final_result.get("intent", "unknown"),
+                task_type=rtype,
                 success=True,
                 response_time_ms=elapsed,
-                has_citations=bool(result.get("citations")),
+                has_citations=bool(final_result.get("citations")),
                 llm_model="glm-4.7",
             )
 
         except Exception as e:
             logger.error(f"Chat error: {e}", exc_info=True)
-            # Record failed eval
             try:
                 session_id = f"s_{req.project_id}_{int(time.time())}"
                 record_eval(
@@ -115,7 +154,7 @@ async def chat_endpoint(req: ChatRequest):
 
 @router.post("/chat/sub")
 async def sub_chat_endpoint(req: SubChatRequest):
-    """子对话 — 章节级编辑"""
+    """子对话 — 章节级编辑（使用旧 coordinator 保持兼容）"""
     if not req.message or not req.message.strip():
         raise HTTPException(status_code=422, detail="Message must not be empty")
     if len(req.message) > MAX_MESSAGE_LENGTH:
@@ -125,19 +164,12 @@ async def sub_chat_endpoint(req: SubChatRequest):
     try:
         from src.core.agents.coordinator import coordinator
 
-        SECTION_CONTENT_BUDGET = 3000
-        MAIN_CONTEXT_BUDGET = 800
-        SUB_CONTEXT_BUDGET = 600
-        CONTENT_SNIPPET_LENGTH = 150
-
-        augmented_prompt = f"""用户正在撰写论文的「{req.section_name}」章节。
-
-当前章节内容：
-{req.content[:SECTION_CONTENT_BUDGET]}
-
-用户最新指令：{req.message}
-
-请根据用户指令对「{req.section_name}」章节进行操作。直接输出修改后的内容或回答。"""
+        augmented_prompt = (
+            f"用户正在撰写论文的「{req.section_name}」章节。\n\n"
+            f"当前章节内容：\n{req.content[:3000]}\n\n"
+            f"用户最新指令：{req.message}\n\n"
+            f"请根据用户指令对「{req.section_name}」章节进行操作。直接输出修改后的内容或回答。"
+        )
 
         result = await asyncio.to_thread(
             coordinator.process,
@@ -149,12 +181,9 @@ async def sub_chat_endpoint(req: SubChatRequest):
         content = result.get("content", "")
         rtype = result.get("type", "text")
 
-        # 子对话内容也保存回数据库
         if content and rtype != "error":
             from src.core.memory import project_memory
-            project_memory.save_section(
-                req.project_id, req.section_name, content
-            )
+            project_memory.save_section(req.project_id, req.section_name, content)
 
         return {
             "content": content,

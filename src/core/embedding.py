@@ -137,6 +137,33 @@ class VectorStore:
                 })
         return output
 
+    def get_chunks_by_paper(self, paper_id: str) -> list[dict]:
+        """获取某篇论文的所有 chunks（按 section_level 和 section_title 排序）"""
+        try:
+            results = self.paper_collection.get(
+                where={"paper_id": paper_id},
+                include=["documents", "metadatas"],
+            )
+        except Exception as e:
+            logger.error(f"获取论文 chunks 失败: {e}")
+            return []
+
+        output = []
+        if results["ids"]:
+            for i in range(len(results["ids"])):
+                meta = results["metadatas"][i] if results["metadatas"] else {}
+                output.append({
+                    "chunk_id": results["ids"][i],
+                    "text": results["documents"][i],
+                    "section_title": meta.get("section_title", ""),
+                    "section_level": meta.get("section_level", "L2"),
+                    "has_table": meta.get("has_table", False),
+                })
+        # Sort: L0 first (abstract), then L1, then L2
+        level_order = {"L0": 0, "L1": 1, "L2": 2}
+        output.sort(key=lambda c: level_order.get(c["section_level"], 2))
+        return output
+
     def delete_paper(self, paper_id: str):
         """删除某篇论文的所有 chunks"""
         self.paper_collection.delete(
