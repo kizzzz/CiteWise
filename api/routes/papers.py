@@ -14,6 +14,8 @@ router = APIRouter()
 
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 
+from src.core.file_parser import is_supported, get_file_extension, parse_file
+
 
 @router.get("/papers")
 async def list_papers(project_id: str):
@@ -32,7 +34,7 @@ async def upload_papers(files: list[UploadFile] = File(...), project_id: str = F
 async def upload_papers_stream(files: list[UploadFile] = File(...), project_id: str = Form(...)):
     """上传论文 — SSE 流式返回进度（适合需要实时进度的前端）"""
     async def progress_generator():
-        from src.core.rag import parse_pdf, chunk_paper
+        from src.core.rag import chunk_paper
         from src.core.memory import project_memory
 
         total = len(files)
@@ -45,12 +47,12 @@ async def upload_papers_stream(files: list[UploadFile] = File(...), project_id: 
         }, ensure_ascii=False)}
 
         for idx, f in enumerate(files):
-            safe_name = os.path.basename(f.filename or "unknown.pdf")
+            safe_name = os.path.basename(f.filename or "unknown")
 
             # Validate file extension
-            if not safe_name.lower().endswith('.pdf'):
+            if not is_supported(safe_name):
                 yield {"event": "warning", "data": json.dumps({
-                    "file": safe_name, "error": "仅支持 PDF 文件",
+                    "file": safe_name, "error": "不支持的文件格式",
                 }, ensure_ascii=False)}
                 continue
 
@@ -59,14 +61,6 @@ async def upload_papers_stream(files: list[UploadFile] = File(...), project_id: 
             if len(content) > MAX_FILE_SIZE:
                 yield {"event": "warning", "data": json.dumps({
                     "file": safe_name, "error": "File exceeds 50MB size limit",
-                }, ensure_ascii=False)}
-                continue
-
-            # Validate PDF magic bytes
-            if not content.startswith(b'%PDF-'):
-                logger.warning(f"跳过非PDF文件: {safe_name}")
-                yield {"event": "warning", "data": json.dumps({
-                    "file": safe_name, "error": "无效的 PDF 文件格式",
                 }, ensure_ascii=False)}
                 continue
 
@@ -80,13 +74,20 @@ async def upload_papers_stream(files: list[UploadFile] = File(...), project_id: 
             }, ensure_ascii=False)}
 
             try:
-                data = await asyncio.to_thread(parse_pdf, path)
+                data = await asyncio.to_thread(parse_file, path, safe_name)
                 chunks = await asyncio.to_thread(chunk_paper, data)
+
+                sections_json = json.dumps(
+                    data.get("sections", []),
+                    ensure_ascii=False
+                )
+                raw_text = data.get("raw_text", "")
 
                 project_memory.add_paper(
                     data["paper_id"], project_id,
                     data.get("title", f.filename), data.get("authors", ""),
-                    data.get("year", 0), safe_name, len(chunks)
+                    data.get("year", 0), safe_name, len(chunks),
+                    raw_text=raw_text, sections_json=sections_json
                 )
                 all_chunks.extend(chunks)
 
@@ -110,7 +111,7 @@ async def upload_papers_stream(files: list[UploadFile] = File(...), project_id: 
             except Exception as e:
                 logger.error(f"解析 {safe_name} 失败: {e}")
                 yield {"event": "warning", "data": json.dumps({
-                    "file": safe_name, "error": "文件解析失败",
+                    "file": safe_name, "error": f"文件解析失败: {str(e)}",
                 }, ensure_ascii=False)}
 
         # 索引阶段
@@ -138,7 +139,7 @@ async def upload_papers_stream(files: list[UploadFile] = File(...), project_id: 
 
 async def _process_uploads(files: list[UploadFile], project_id: str) -> dict:
     """处理上传文件的共享逻辑"""
-    from src.core.rag import parse_pdf, chunk_paper
+    from src.core.rag import chunk_paper
     from src.core.embedding import vector_store
     from src.core.retriever import bm25_index
     from src.core.memory import project_memory
@@ -148,11 +149,11 @@ async def _process_uploads(files: list[UploadFile], project_id: str) -> dict:
     processed = 0
 
     for f in files:
-        safe_name = os.path.basename(f.filename or "unknown.pdf")
+        safe_name = os.path.basename(f.filename or "unknown")
 
         # Validate file extension
-        if not safe_name.lower().endswith('.pdf'):
-            logger.warning(f"跳过非PDF文件: {safe_name}")
+        if not is_supported(safe_name):
+            logger.warning(f"跳过不支持的文件格式: {safe_name}")
             continue
 
         # Read content for validation
@@ -161,22 +162,23 @@ async def _process_uploads(files: list[UploadFile], project_id: str) -> dict:
             logger.warning(f"跳过超大文件: {safe_name}")
             continue
 
-        # Validate PDF magic bytes
-        if not file_content.startswith(b'%PDF-'):
-            logger.warning(f"跳过非PDF文件: {safe_name}")
-            continue
-
         path = os.path.join(PAPERS_DIR, safe_name)
         with open(path, "wb") as fp:
             fp.write(file_content)
 
         try:
-            data = await asyncio.to_thread(parse_pdf, path)
+            data = await asyncio.to_thread(parse_file, path, safe_name)
             chunks = await asyncio.to_thread(chunk_paper, data)
+            sections_json = json.dumps(
+                data.get("sections", []),
+                ensure_ascii=False
+            )
+            raw_text = data.get("raw_text", "")
             project_memory.add_paper(
                 data["paper_id"], project_id,
                 data.get("title", f.filename), data.get("authors", ""),
-                data.get("year", 0), safe_name, len(chunks)
+                data.get("year", 0), safe_name, len(chunks),
+                raw_text=raw_text, sections_json=sections_json
             )
             all_chunks.extend(chunks)
 
@@ -245,39 +247,61 @@ async def get_paper_detail(paper_id: str):
 
     paper = dict(row)
 
-    # 从向量库获取该论文的所有 chunks
+    # Strategy 1: Read from SQLite raw_text / sections_json (persisted at upload time)
+    raw_text = paper.get("raw_text", "")
+    sections_json_str = paper.get("sections_json", "[]")
+    sections = []
+    try:
+        sections = json.loads(sections_json_str) if sections_json_str else []
+    except (json.JSONDecodeError, TypeError):
+        sections = []
+
+    if sections and any(s.get("text", "").strip() for s in sections):
+        paper["abstract"] = ""
+        paper["sections"] = [
+            {
+                "title": s.get("title", "全文"),
+                "level": "L1",
+                "text": s.get("text", ""),
+            }
+            for s in sections
+        ]
+        paper["full_text"] = raw_text or "\n\n".join(
+            s.get("text", "") for s in sections
+        )
+        return paper
+
+    # Strategy 2: Fallback to ChromaDB chunks
     try:
         chunks = await asyncio.to_thread(vector_store.get_chunks_by_paper, paper_id)
         if chunks:
-            # 按章节组织内容
-            sections = []
+            grouped = []
             current_section = None
             for c in chunks:
                 title = c.get("section_title", "全文")
                 if not current_section or current_section["title"] != title:
                     current_section = {"title": title, "level": c.get("section_level", "L2"), "text": c["text"]}
-                    sections.append(current_section)
+                    grouped.append(current_section)
                 else:
                     current_section["text"] += "\n\n" + c["text"]
 
-            # 提取 abstract (L0 chunk)
             abstract = ""
-            for s in sections:
+            for s in grouped:
                 if s["level"] == "L0":
                     abstract = s["text"]
                     break
 
             paper["abstract"] = abstract
-            paper["sections"] = sections
-            paper["full_text"] = "\n\n".join(s["text"] for s in sections)
+            paper["sections"] = grouped
+            paper["full_text"] = "\n\n".join(s["text"] for s in grouped)
         else:
-            paper["abstract"] = "暂无内容"
+            paper["abstract"] = raw_text[:500] if raw_text else "暂无内容"
             paper["sections"] = []
-            paper["full_text"] = ""
+            paper["full_text"] = raw_text or ""
     except Exception as e:
         logger.error(f"获取论文 chunks 失败: {e}")
-        paper["abstract"] = "加载失败"
+        paper["abstract"] = raw_text[:500] if raw_text else "加载失败"
         paper["sections"] = []
-        paper["full_text"] = ""
+        paper["full_text"] = raw_text or ""
 
     return paper

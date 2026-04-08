@@ -43,3 +43,17 @@ class TTSRequest(BaseModel):
 
 class FieldsRequest(BaseModel):
     fields: list[str] = Field(..., min_length=1, description="字段列表")
+
+
+class RegisterRequest(BaseModel):
+    username: str = Field(..., min_length=2, max_length=50, description="用户名")
+    password: str = Field(..., min_length=6, max_length=100, description="密码")
+
+
+class LoginRequest(BaseModel):
+    username: str = Field(..., min_length=2, max_length=50, description="用户名")
+    password: str = Field(..., min_length=6, max_length=100, description="密码")
+
+
+class ApiKeyRequest(BaseModel):
+    api_key: str = Field(..., min_length=1, description="API Key")

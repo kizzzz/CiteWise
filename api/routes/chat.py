@@ -1,4 +1,4 @@
-"""聊天路由 — LangGraph 流式响应（agent_start/agent_end + 内容）"""
+"""聊天路由 — LangGraph 流式响应（token 级流式 + agent_start/agent_end）"""
 import asyncio
 import json
 import logging
@@ -21,7 +21,7 @@ _AGENT_NODES = {"supervisor", "researcher", "responder", "writer", "analyst"}
 
 @router.post("/chat")
 async def chat_endpoint(req: ChatRequest):
-    """主对话 — LangGraph astream_events 流式返回"""
+    """主对话 — 真正的 token 级 SSE 流式输出"""
     if not req.message or not req.message.strip():
         raise HTTPException(status_code=422, detail="Message must not be empty")
     if len(req.message) > MAX_MESSAGE_LENGTH:
@@ -31,122 +31,13 @@ async def chat_endpoint(req: ChatRequest):
 
     async def event_generator():
         try:
-            from src.core.async_graph import get_async_graph
+            from src.core.async_graph import stream_chat_response
 
-            graph = get_async_graph()
-            config = {"configurable": {"thread_id": req.project_id}}
-            input_state = {
-                "user_input": req.message,
-                "project_id": req.project_id,
-                "thinking_steps": [],
-                "agent_events": [],
-            }
-
-            start_time = time.time()
-            final_result = {}
-
-            async for event in graph.astream_events(
-                input_state, config=config, version="v2"
-            ):
-                kind = event["event"]
-                name = event.get("name", "")
-
-                # Agent 节点开始
-                if kind == "on_chain_start" and name in _AGENT_NODES:
-                    output_state = event.get("data", {}).get("input", {})
-                    agent_events = output_state.get("agent_events", []) if isinstance(output_state, dict) else []
-                    # 从已有的 agent_events 中取最后一条作为描述
-                    last = agent_events[-1] if agent_events else {}
-                    yield {
-                        "event": "agent_start",
-                        "data": json.dumps({
-                            "agent": name.capitalize(),
-                            "detail": last.get("detail", f"{name} 启动中..."),
-                        }, ensure_ascii=False),
-                    }
-
-                # Agent 节点完成
-                elif kind == "on_chain_end" and name in _AGENT_NODES:
-                    output = event.get("data", {}).get("output", {})
-                    if isinstance(output, dict):
-                        final_result.update(output)
-                        agent_events = output.get("agent_events", [])
-                        last = agent_events[-1] if agent_events else {}
-                        yield {
-                            "event": "agent_end",
-                            "data": json.dumps({
-                                "agent": name.capitalize(),
-                                "detail": last.get("detail", "完成"),
-                                "duration_ms": last.get("duration_ms", 0),
-                            }, ensure_ascii=False),
-                        }
-
-            # ---- 发送最终结果 ----
-            # 思考步骤
-            for step in final_result.get("thinking_steps", []):
-                yield {"event": "thinking", "data": json.dumps({"step": step}, ensure_ascii=False)}
-
-            # 内容
-            content = final_result.get("content", "")
-            rtype = final_result.get("response_type", final_result.get("type", "text"))
-            if content:
-                yield {"event": "content", "data": json.dumps({
-                    "content": content, "type": rtype,
-                }, ensure_ascii=False)}
-
-            # 引用
-            citations = final_result.get("citations")
-            if citations:
-                yield {"event": "citations", "data": json.dumps(citations, ensure_ascii=False)}
-
-            sources = final_result.get("sources")
-            if sources:
-                yield {"event": "sources", "data": json.dumps(sources, ensure_ascii=False)}
-
-            # 章节名
-            section_name = final_result.get("section_name")
-            if section_name:
-                yield {"event": "section", "data": json.dumps({
-                    "section_name": section_name, "content": content, "type": rtype,
-                }, ensure_ascii=False)}
-
-            # 来源标注
-            content_sources = final_result.get("content_sources")
-            if content_sources:
-                yield {"event": "content_sources", "data": json.dumps(content_sources, ensure_ascii=False)}
-
-            elapsed = int((time.time() - start_time) * 1000)
-            yield {"event": "done", "data": json.dumps({"type": rtype}, ensure_ascii=False)}
-
-            # Eval metrics
-            session_id = f"s_{req.project_id}_{int(time.time())}"
-            record_eval(
-                session_id=session_id,
-                project_id=req.project_id,
-                intent=final_result.get("intent", "unknown"),
-                task_type=rtype,
-                success=True,
-                response_time_ms=elapsed,
-                has_citations=bool(final_result.get("citations")),
-                llm_model="glm-4.7",
-            )
+            async for event in stream_chat_response(req.message, req.project_id):
+                yield event
 
         except Exception as e:
             logger.error(f"Chat error: {e}", exc_info=True)
-            try:
-                session_id = f"s_{req.project_id}_{int(time.time())}"
-                record_eval(
-                    session_id=session_id,
-                    project_id=req.project_id,
-                    intent="unknown",
-                    task_type="text",
-                    success=False,
-                    response_time_ms=int((time.time() - start_time) * 1000),
-                    llm_model="glm-4.7",
-                    metadata={"error": "internal_error"},
-                )
-            except Exception:
-                pass
             yield {"event": "error", "data": json.dumps({"message": "处理请求时发生错误，请稍后重试"}, ensure_ascii=False)}
 
     return EventSourceResponse(event_generator())

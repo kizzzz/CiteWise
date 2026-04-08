@@ -5,7 +5,7 @@
 import json
 import re
 import logging
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
 from openai import OpenAI
 from config.settings import OPENAI_API_KEY, OPENAI_BASE_URL, LLM_MODEL
 
@@ -28,6 +28,10 @@ class LLMClient:
         self._async_client = None
         self.model = LLM_MODEL
 
+    def _get_api_key(self, override: Optional[str] = None) -> str:
+        """Get API key: override > default"""
+        return override or OPENAI_API_KEY
+
     @property
     def async_client(self):
         """延迟初始化异步客户端"""
@@ -38,6 +42,14 @@ class LLMClient:
                 base_url=OPENAI_BASE_URL,
             )
         return self._async_client
+
+    def get_async_client(self, api_key: Optional[str] = None):
+        """Get async client with optional user API key"""
+        key = self._get_api_key(api_key)
+        if key != OPENAI_API_KEY:
+            from openai import AsyncOpenAI
+            return AsyncOpenAI(api_key=key, base_url=OPENAI_BASE_URL)
+        return self.async_client
 
     # ===== 同步接口 (兼容旧代码) =====
 
@@ -94,10 +106,11 @@ class LLMClient:
             raise LLMError(f"LLM 异步调用失败: {str(e)}") from e
 
     async def achat_stream(self, messages: list[dict], temperature: float = 0.7,
-                           max_tokens: int = 4000) -> AsyncGenerator[str, None]:
+                           max_tokens: int = 4000, api_key: Optional[str] = None) -> AsyncGenerator[str, None]:
         """异步流式对话 — 逐 token yield"""
+        client = self.get_async_client(api_key)
         try:
-            stream = await self.async_client.chat.completions.create(
+            stream = await client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 temperature=temperature,

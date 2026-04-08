@@ -47,8 +47,11 @@ def parse_pdf(pdf_path: str) -> dict:
     try:
         with pdfplumber.open(pdf_path) as pdf:
             current_section = {"title": "全文", "text": "", "tables": []}
+            # 支持英文数字编号 (1.2.3 Title) 和中文编号 (一、引言 / 第一章 引言)
             section_pattern = re.compile(
-                r'^(\d+(?:\.\d+)*)\s+([A-Z][^\n]{2,80})'
+                r'^(\d+(?:\.\d+)*)\s+([A-Z\u4e00-\u9fff][^\n]{2,80})'
+                r'|^[一二三四五六七八九十百]+[、．.]\s*([^\n]{2,80})'
+                r'|^第[一二三四五六七八九十百]+[章节]\s*([^\n]{2,80})'
             )
 
             for i, page in enumerate(pdf.pages):
@@ -83,8 +86,20 @@ def parse_pdf(pdf_path: str) -> dict:
                             buffer_lines = []
                         if current_section["text"].strip():
                             sections.append(current_section.copy())
+                        # Extract section title from whichever group matched
+                        if match.group(1) and match.group(2):
+                            # English: "1.2.3 Title"
+                            section_title = f"{match.group(1)} {match.group(2).strip()}"
+                        elif match.group(3):
+                            # Chinese: "一、引言"
+                            section_title = match.group(3).strip()
+                        elif match.group(4):
+                            # Chinese: "第一章 引言"
+                            section_title = match.group(4).strip()
+                        else:
+                            section_title = stripped
                         current_section = {
-                            "title": f"{match.group(1)} {match.group(2).strip()}",
+                            "title": section_title,
                             "text": "",
                             "tables": []
                         }

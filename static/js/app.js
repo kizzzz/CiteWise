@@ -13,6 +13,8 @@ let currentDraftSection = null;
 let chatBusy = false;
 let currentDraftId = null;
 let currentDraftName = '';
+let currentUser = null; // { id, username, token }
+let authMode = 'login'; // 'login' or 'register'
 
 let agents = [
     { id: 'research', name: 'Research', icon: 'search', status: 'READY', color: 'blue' },
@@ -46,6 +48,22 @@ document.addEventListener('DOMContentLoaded', async () => {
     renderToolLibrary();
     renderFields();
 
+    // Restore user session from localStorage
+    const savedUser = localStorage.getItem('citewise_user');
+    if (savedUser) {
+        try {
+            currentUser = JSON.parse(savedUser);
+            updateAuthUI();
+        } catch { currentUser = null; }
+    }
+
+    // Restore API key
+    const savedKey = localStorage.getItem('citewise_api_key');
+    if (savedKey) {
+        apiKeys = [{ id: '1', name: '智谱 API Key', value: savedKey, active: true }];
+        renderApiKeyList();
+    }
+
     // Enter key for chat input
     document.getElementById('chatInput').addEventListener('keypress', (e) => {
         if (e.key === 'Enter') handleSendChat();
@@ -70,6 +88,9 @@ async function api(method, path, body = null) {
         headers: { 'Content-Type': 'application/json' },
     };
     if (body) opts.body = JSON.stringify(body);
+    if (currentUser && currentUser.token) {
+        opts.headers['Authorization'] = `Bearer ${currentUser.token}`;
+    }
     const resp = await fetch(`${API_BASE}/api${path}`, opts);
     if (!resp.ok) {
         const err = await resp.text();
@@ -464,6 +485,8 @@ async function handleSendChat() {
         const decoder = new TextDecoder();
         let buffer = '';
         let events = [];
+        let streamingContent = '';
+        let resBox = null;
 
         while (true) {
             const { done, value } = await reader.read();
@@ -488,18 +511,34 @@ async function handleSendChat() {
                     // Real-time agent timeline in collab bubble
                     if (eventType === 'agent_start' && data.agent) {
                         appendTimelineStep(collabId + '-timeline', data.agent, 'running', data.detail);
-                        // Update agent status in left sidebar
                         updateAgentStatus(data.agent, 'RUNNING');
                     }
                     if (eventType === 'agent_end' && data.agent) {
                         updateTimelineStep(collabId + '-timeline', data.agent, 'done', data.detail, data.duration_ms);
                         updateAgentStatus(data.agent, 'READY');
                     }
+
+                    // Token-level streaming: append tokens in real-time
+                    if (eventType === 'token' && data.text) {
+                        if (!resBox) {
+                            resBox = document.getElementById(collabId + '-res');
+                            if (resBox) {
+                                resBox.classList.remove('hidden');
+                                resBox.innerHTML = '';
+                            }
+                        }
+                        if (resBox) {
+                            streamingContent += data.text;
+                            // Use innerHTML for source-colored display
+                            resBox.textContent = streamingContent;
+                            scrollChat();
+                        }
+                    }
                 }
             }
         }
 
-        // Process collected events
+        // Process remaining events for final content
         let content = '';
         for (const evt of events) {
             if (evt.type === 'content' && evt.data) {
@@ -514,10 +553,12 @@ async function handleSendChat() {
             }
         }
 
-        if (content) {
-            const resBox = document.getElementById(collabId + '-res');
-            resBox.classList.remove('hidden');
+        // Final render with source annotations
+        if (content && resBox) {
             await streamCategorizedText(resBox, content);
+        } else if (!content && streamingContent && resBox) {
+            // Fallback: if no final content event, use streamed tokens
+            resBox.textContent = streamingContent;
         }
     } catch (e) {
         showToast('请求失败: ' + e.message, 'error');
@@ -1071,17 +1112,22 @@ function confirmCreateSkill() {
 function renderApiKeyList() {
     const c = document.getElementById('apiKeyListContainer');
     if (!c) return;
+    if (apiKeys.length === 0) {
+        c.innerHTML = '<div class="col-span-2 text-center text-slate-400 py-8">暂无 API Key，请点击右上角配置</div>';
+        return;
+    }
     c.innerHTML = apiKeys.map(k =>
         `<div class="p-5 bg-white border border-slate-200 rounded-2xl shadow-sm cursor-pointer ${k.active ? 'key-card-active' : ''}" onclick="switchKey('${k.id}')">
             <div class="font-bold text-sm text-slate-800">${escapeHtml(k.name)}</div>
             <div class="text-[10px] text-slate-400 font-mono">••••${escapeHtml(k.value.slice(-4))}</div>
+            <div class="text-[9px] mt-2 font-bold ${k.active ? 'text-emerald-600' : 'text-slate-400'}">${k.active ? '● 已激活' : '未激活'}</div>
         </div>`
     ).join('');
 }
 
 function saveApiKey() {
+    // Open the new key modal
     toggleModal('keyModal');
-    showToast('配置已保存', 'success');
 }
 
 function switchKey(id) {
@@ -1165,4 +1211,149 @@ function escapeAttr(str) {
 function escapeJs(str) {
     if (!str) return '';
     return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"');
+}
+
+// ============ Auth Functions ============
+function showAuthModal(mode) {
+    authMode = mode || 'login';
+    const title = document.getElementById('authModalTitle');
+    const submitBtn = document.getElementById('authSubmitBtn');
+    const toggleBtn = document.getElementById('authToggleBtn');
+    if (authMode === 'login') {
+        if (title) title.textContent = '登录';
+        if (submitBtn) submitBtn.textContent = '登录';
+        if (toggleBtn) toggleBtn.textContent = '没有账号？立即注册';
+    } else {
+        if (title) title.textContent = '注册';
+        if (submitBtn) submitBtn.textContent = '注册';
+        if (toggleBtn) toggleBtn.textContent = '已有账号？立即登录';
+    }
+    const errEl = document.getElementById('authError');
+    if (errEl) errEl.classList.add('hidden');
+    toggleModal('authModal');
+}
+
+function toggleAuthMode() {
+    showAuthModal(authMode === 'login' ? 'register' : 'login');
+}
+
+async function handleAuth() {
+    const username = document.getElementById('authUsername').value.trim();
+    const password = document.getElementById('authPassword').value;
+    const errEl = document.getElementById('authError');
+    if (!username || !password) {
+        if (errEl) { errEl.textContent = '请填写用户名和密码'; errEl.classList.remove('hidden'); }
+        return;
+    }
+
+    const endpoint = authMode === 'login' ? '/auth/login' : '/auth/register';
+    try {
+        const resp = await fetch(`${API_BASE}/api${endpoint}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password }),
+        });
+        const data = await resp.json();
+
+        if (!resp.ok) {
+            if (errEl) { errEl.textContent = data.detail || '操作失败'; errEl.classList.remove('hidden'); }
+            return;
+        }
+
+        currentUser = { id: data.user.id, username: data.user.username, token: data.token };
+        localStorage.setItem('citewise_user', JSON.stringify(currentUser));
+        updateAuthUI();
+        toggleModal('authModal');
+        showToast(authMode === 'login' ? '登录成功' : '注册成功', 'success');
+    } catch (e) {
+        if (errEl) { errEl.textContent = '网络错误: ' + e.message; errEl.classList.remove('hidden'); }
+    }
+}
+
+function logout() {
+    currentUser = null;
+    localStorage.removeItem('citewise_user');
+    updateAuthUI();
+    showToast('已登出', 'success');
+}
+
+function updateAuthUI() {
+    const name = currentUser ? currentUser.username : '未登录';
+    const initial = currentUser ? currentUser.username.charAt(0).toUpperCase() : '?';
+    const idText = currentUser ? `用户 ID: ${currentUser.id}` : '点击登录以启用数据隔离';
+
+    // Sidebar
+    const sidebarName = document.getElementById('sidebarUsername');
+    const sidebarAvatar = document.getElementById('sidebarAvatar');
+    if (sidebarName) sidebarName.textContent = name;
+    if (sidebarAvatar) sidebarAvatar.textContent = initial;
+
+    // Settings page
+    const settingsName = document.getElementById('settingsUsername');
+    const settingsAvatar = document.getElementById('settingsAvatar');
+    const settingsId = document.getElementById('settingsUserId');
+    const settingsLoginBtn = document.getElementById('settingsLoginBtn');
+    if (settingsName) settingsName.textContent = name;
+    if (settingsAvatar) settingsAvatar.textContent = initial;
+    if (settingsId) settingsId.textContent = idText;
+    if (settingsLoginBtn) {
+        if (currentUser) {
+            settingsLoginBtn.textContent = '登出';
+            settingsLoginBtn.onclick = logout;
+        } else {
+            settingsLoginBtn.textContent = '登录';
+            settingsLoginBtn.onclick = () => showAuthModal('login');
+        }
+    }
+}
+
+// ============ API Key Functions (Real) ============
+async function verifyAndSaveApiKey() {
+    const keyInput = document.getElementById('keyValueInput');
+    const resultEl = document.getElementById('keyVerifyResult');
+    const btn = document.getElementById('keyVerifyBtn');
+    if (!keyInput || !keyInput.value.trim()) {
+        if (resultEl) { resultEl.textContent = '请输入 API Key'; resultEl.className = 'text-xs font-bold p-2 rounded-lg text-red-600 bg-red-50'; resultEl.classList.remove('hidden'); }
+        return;
+    }
+
+    const apiKey = keyInput.value.trim();
+    if (btn) { btn.disabled = true; btn.textContent = '验证中...'; }
+
+    try {
+        const resp = await fetch(`${API_BASE}/api/apikeys/verify`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ api_key: apiKey }),
+        });
+        const data = await resp.json();
+
+        if (data.valid) {
+            // Save to localStorage
+            localStorage.setItem('citewise_api_key', apiKey);
+            apiKeys = [{ id: '1', name: '智谱 API Key', value: apiKey, active: true }];
+            renderApiKeyList();
+
+            // Save to backend if logged in
+            if (currentUser) {
+                try {
+                    await fetch(`${API_BASE}/api/apikeys/save`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ api_key: apiKey, user_id: currentUser.id }),
+                    });
+                } catch { /* non-critical */ }
+            }
+
+            if (resultEl) { resultEl.textContent = data.message; resultEl.className = 'text-xs font-bold p-2 rounded-lg text-emerald-600 bg-emerald-50 border border-emerald-100'; resultEl.classList.remove('hidden'); }
+            showToast('API Key 验证成功', 'success');
+            setTimeout(() => toggleModal('keyModal'), 1000);
+        } else {
+            if (resultEl) { resultEl.textContent = data.message; resultEl.className = 'text-xs font-bold p-2 rounded-lg text-red-600 bg-red-50 border border-red-100'; resultEl.classList.remove('hidden'); }
+        }
+    } catch (e) {
+        if (resultEl) { resultEl.textContent = '验证请求失败: ' + e.message; resultEl.className = 'text-xs font-bold p-2 rounded-lg text-red-600 bg-red-50'; resultEl.classList.remove('hidden'); }
+    }
+
+    if (btn) { btn.disabled = false; btn.textContent = '验证并保存'; }
 }

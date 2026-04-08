@@ -4,6 +4,7 @@
 使 astream_events 能 yield on_chat_model_stream 事件。
 """
 import logging
+import time
 
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
@@ -30,8 +31,11 @@ _analyst = AnalystAgent()
 # ========== Async Node Functions ==========
 
 async def async_responder_node(state: AgentState) -> dict:
-    """异步 Responder — 支持逐 token 流式输出"""
-    import time
+    """异步 Responder — 使用 achat_stream 逐 token 输出
+
+    每个 token 通过 state["stream_tokens"] 传递，
+    聊天路由会收集并推送。
+    """
     start = time.time()
 
     events = list(state.get("agent_events", [])) + [
@@ -75,8 +79,12 @@ async def async_responder_node(state: AgentState) -> dict:
         {"role": "user", "content": prompt},
     ]
 
-    # 异步调用 — astream_events 可以捕获此调用的流式输出
-    response = await llm_client.achat(messages, temperature=0.7)
+    # 流式 token 收集
+    collected_tokens = []
+    async for token in llm_client.achat_stream(messages, temperature=0.7):
+        collected_tokens.append(token)
+
+    response = "".join(collected_tokens)
     response = annotate_sources(response, chunks, web_results)
 
     citation_check = validate_citations(response, chunks) if chunks else {}
@@ -104,7 +112,6 @@ async def async_responder_node(state: AgentState) -> dict:
 
 async def async_writer_node(state: AgentState) -> dict:
     """异步 Writer — 异步 LLM 调用"""
-    import time
     start = time.time()
     intent = state.get("intent", "generate")
     user_input = state.get("user_input", "")
@@ -121,8 +128,6 @@ async def async_writer_node(state: AgentState) -> dict:
         "sources": state.get("sources", []),
     }
 
-    # 对大部分 writer 操作使用同步调用（保持兼容）
-    # 仅对 generate 使用异步
     if intent == "modify":
         result = _writer.modify_content(
             user_input, state.get("target_content", ""),
@@ -164,7 +169,6 @@ async def _async_generate_section(section_name, section_topic, research_result,
     rag_content = research_result.get("rag_content", "")
     chunks = research_result.get("chunks", [])
     previous_summary = working_memory.get_previous_summary()
-    project_state = project_memory.get_project_state(project_id) if project_id else {}
 
     system = SYSTEM_PROMPT_BASE
     task_prompt = prompt_engine.build_section_prompt(
@@ -181,8 +185,11 @@ async def _async_generate_section(section_name, section_topic, research_result,
         {"role": "user", "content": task_prompt},
     ]
 
-    # 异步 LLM 调用
-    content = await llm_client.achat(messages, temperature=0.7, max_tokens=4000)
+    # 流式收集
+    collected_tokens = []
+    async for token in llm_client.achat_stream(messages, temperature=0.7, max_tokens=4000):
+        collected_tokens.append(token)
+    content = "".join(collected_tokens)
     content = annotate_sources(content, chunks, [])
 
     project_memory.save_section(project_id, section_name, content)
@@ -207,17 +214,162 @@ async def _async_generate_section(section_name, section_topic, research_result,
     }
 
 
+# ========== Streaming Response Builder ==========
+# This function provides direct token-level streaming for the chat route.
+
+async def stream_chat_response(user_input: str, project_id: str):
+    """直接流式对话 — 路由 → RAG → 流式 LLM 输出
+
+    Yields SSE events: agent_start, agent_end, token, content, citations, done
+    """
+    import json
+    from src.core.llm import llm_client
+    from src.core.prompt import SYSTEM_PROMPT_BASE
+    from src.core.source_annotation import annotate_sources
+    from src.core.retriever import validate_citations, hybrid_search
+
+    start_time = time.time()
+
+    # Step 1: Route intent (sync, fast)
+    yield {"event": "agent_start", "data": json.dumps({
+        "agent": "Supervisor", "detail": "分析意图..."
+    }, ensure_ascii=False)}
+
+    route_result = _router.route(user_input)
+    intent = route_result.get("intent", "explore")
+    yield {"event": "agent_end", "data": json.dumps({
+        "agent": "Supervisor", "detail": f"意图: {intent}"
+    }, ensure_ascii=False)}
+
+    # Step 2: Research (RAG)
+    chunks = []
+    web_results = []
+    rag_content = ""
+
+    yield {"event": "agent_start", "data": json.dumps({
+        "agent": "Researcher", "detail": "检索知识库..."
+    }, ensure_ascii=False)}
+
+    try:
+        chunks = hybrid_search(user_input, project_id=project_id)
+        if chunks:
+            rag_parts = []
+            for i, c in enumerate(chunks[:10]):
+                rag_parts.append(f"[{i+1}] {c.get('paper_title', '')} ({c.get('year', '')}): {c['text'][:300]}")
+            rag_content = "\n\n".join(rag_parts)
+    except Exception as e:
+        logger.warning(f"RAG 检索失败: {e}")
+
+    # Web search if needed
+    if intent == "websearch":
+        try:
+            from src.tools.web_search import web_search_tool
+            web_results = web_search_tool.search(user_input, max_results=5)
+        except Exception as e:
+            logger.warning(f"联网搜索失败: {e}")
+
+    yield {"event": "agent_end", "data": json.dumps({
+        "agent": "Researcher",
+        "detail": f"检索完成: {len(chunks)} 文献片段" + (f", {len(web_results)} 网络结果" if web_results else ""),
+        "duration_ms": int((time.time() - start_time) * 1000),
+    }, ensure_ascii=False)}
+
+    # Step 3: Stream LLM response
+    yield {"event": "agent_start", "data": json.dumps({
+        "agent": "Responder", "detail": "生成回答..."
+    }, ensure_ascii=False)}
+
+    safe_input = user_input.replace("```", " ").replace("<|", " ").strip()
+
+    if intent == "websearch" and web_results:
+        web_snippets = "\n".join(
+            f"- [{r['title']}]({r['url']}): {r['snippet']}" for r in web_results
+        )
+        prompt = (
+            f"## 用户问题\n{safe_input}\n\n"
+            f"## 网络搜索结果\n{web_snippets}\n\n"
+            f"## 知识库文献\n{rag_content or '（无）'}\n\n"
+            "请整合以上来源回答用户问题，使用 [作者, 年份] 标注引用。"
+        )
+    else:
+        prompt = (
+            f"## 用户问题\n{safe_input}\n\n"
+            f"## 参考材料（知识库检索）\n{rag_content or '（无相关内容）'}\n\n"
+            "请基于参考材料和自身知识回答，使用 [作者, 年份] 标注引用。"
+        )
+
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT_BASE},
+        {"role": "user", "content": prompt},
+    ]
+
+    # Token-level streaming
+    collected_tokens = []
+    try:
+        async for token in llm_client.achat_stream(messages, temperature=0.7):
+            collected_tokens.append(token)
+            yield {"event": "token", "data": json.dumps({"text": token}, ensure_ascii=False)}
+    except Exception as e:
+        logger.error(f"LLM 流式调用失败: {e}")
+        yield {"event": "error", "data": json.dumps({"message": "LLM 调用失败"}, ensure_ascii=False)}
+        return
+
+    full_response = "".join(collected_tokens)
+    full_response = annotate_sources(full_response, chunks, web_results)
+
+    citation_check = validate_citations(full_response, chunks) if chunks else {}
+    sources = [
+        {"title": c.get("paper_title", ""), "citation": c.get("citation", "")}
+        for c in chunks
+    ] if chunks else []
+
+    elapsed = int((time.time() - start_time) * 1000)
+    yield {"event": "agent_end", "data": json.dumps({
+        "agent": "Responder", "detail": f"生成 {len(full_response)} 字",
+        "duration_ms": elapsed,
+    }, ensure_ascii=False)}
+
+    # Send final content (complete, with source annotations)
+    yield {"event": "content", "data": json.dumps({
+        "content": full_response, "type": "text",
+    }, ensure_ascii=False)}
+
+    if citation_check:
+        yield {"event": "citations", "data": json.dumps(citation_check, ensure_ascii=False)}
+    if sources:
+        yield {"event": "sources", "data": json.dumps(sources, ensure_ascii=False)}
+
+    yield {"event": "done", "data": json.dumps({"type": "text"}, ensure_ascii=False)}
+
+    # Record eval
+    try:
+        from src.eval.metrics import record_eval
+        session_id = f"s_{project_id}_{int(time.time())}"
+        record_eval(
+            session_id=session_id,
+            project_id=project_id,
+            intent=intent,
+            task_type="text",
+            success=True,
+            response_time_ms=elapsed,
+            has_citations=bool(citation_check),
+            llm_model="glm-4.7",
+        )
+    except Exception:
+        pass
+
+
 # ========== Build Async Graph ==========
 
 def build_async_graph():
     """构建异步版 LangGraph — Supervisor 模式，节点使用 async"""
     workflow = StateGraph(AgentState)
 
-    workflow.add_node("supervisor", supervisor_node)    # 同步，够快
-    workflow.add_node("researcher", researcher_node)    # 同步（RAG 是同步的）
-    workflow.add_node("responder", async_responder_node)  # 异步 LLM
-    workflow.add_node("writer", async_writer_node)        # 异步 LLM
-    workflow.add_node("analyst", analyst_node)  # analyst 用同步也行
+    workflow.add_node("supervisor", supervisor_node)
+    workflow.add_node("researcher", researcher_node)
+    workflow.add_node("responder", async_responder_node)
+    workflow.add_node("writer", async_writer_node)
+    workflow.add_node("analyst", analyst_node)
 
     workflow.add_edge(START, "supervisor")
 
@@ -246,3 +398,4 @@ def get_async_graph():
     if _async_graph is None:
         _async_graph = build_async_graph()
     return _async_graph
+

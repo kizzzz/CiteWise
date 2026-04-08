@@ -101,6 +101,7 @@ class ProjectMemory:
                     topic TEXT DEFAULT '',
                     status TEXT DEFAULT 'active',
                     config TEXT DEFAULT '{}',
+                    user_id TEXT DEFAULT '',
                     created_at TEXT DEFAULT (datetime('now'))
                 );
 
@@ -113,6 +114,8 @@ class ProjectMemory:
                     filename TEXT,
                     chunk_count INTEGER DEFAULT 0,
                     metadata TEXT DEFAULT '{}',
+                    raw_text TEXT DEFAULT '',
+                    sections_json TEXT DEFAULT '[]',
                     indexed_at TEXT DEFAULT (datetime('now'))
                 );
 
@@ -149,7 +152,37 @@ class ProjectMemory:
                     height REAL DEFAULT 0,
                     metadata TEXT DEFAULT '{}'
                 );
+
+                CREATE TABLE IF NOT EXISTS users (
+                    id TEXT PRIMARY KEY,
+                    username TEXT UNIQUE NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    api_key TEXT DEFAULT '',
+                    api_key_encrypted TEXT DEFAULT '',
+                    created_at TEXT DEFAULT (datetime('now'))
+                );
             """)
+            # Migration: add columns if they don't exist (SQLite ALTER TABLE)
+            try:
+                conn.execute("ALTER TABLE papers ADD COLUMN raw_text TEXT DEFAULT ''")
+            except Exception:
+                pass
+            try:
+                conn.execute("ALTER TABLE papers ADD COLUMN sections_json TEXT DEFAULT '[]'")
+            except Exception:
+                pass
+            try:
+                conn.execute("ALTER TABLE projects ADD COLUMN user_id TEXT DEFAULT ''")
+            except Exception:
+                pass
+            try:
+                conn.execute("ALTER TABLE users ADD COLUMN api_key TEXT DEFAULT ''")
+            except Exception:
+                pass
+            try:
+                conn.execute("ALTER TABLE users ADD COLUMN api_key_encrypted TEXT DEFAULT ''")
+            except Exception:
+                pass
             conn.commit()
 
     # --- 项目管理 ---
@@ -186,12 +219,13 @@ class ProjectMemory:
 
     # --- 论文管理 ---
     def add_paper(self, paper_id: str, project_id: str, title: str,
-                  authors: str, year: int, filename: str, chunk_count: int = 0):
+                  authors: str, year: int, filename: str, chunk_count: int = 0,
+                  raw_text: str = "", sections_json: str = "[]"):
         with self._get_conn() as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO papers (id, project_id, title, authors, year, filename, chunk_count) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (paper_id, project_id, title, authors, year, filename, chunk_count)
+                "INSERT OR REPLACE INTO papers (id, project_id, title, authors, year, filename, chunk_count, raw_text, sections_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (paper_id, project_id, title, authors, year, filename, chunk_count, raw_text, sections_json)
             )
             conn.commit()
 
@@ -348,6 +382,35 @@ class ProjectMemory:
         with self._get_conn() as conn:
             rows = conn.execute("SELECT * FROM figures WHERE project_id=? ORDER BY page", (project_id,)).fetchall()
         return [dict(r) for r in rows]
+
+    # --- 用户管理 ---
+    def create_user(self, username: str, password_hash: str) -> Optional[str]:
+        uid = f"user_{uuid.uuid4().hex[:8]}"
+        try:
+            with self._get_conn() as conn:
+                conn.execute(
+                    "INSERT INTO users (id, username, password_hash) VALUES (?, ?, ?)",
+                    (uid, username, password_hash)
+                )
+                conn.commit()
+            return uid
+        except Exception:
+            return None
+
+    def get_user_by_username(self, username: str) -> Optional[dict]:
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+        return dict(row) if row else None
+
+    def get_user_by_id(self, user_id: str) -> Optional[dict]:
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+        return dict(row) if row else None
+
+    def update_user_api_key(self, user_id: str, api_key: str):
+        with self._get_conn() as conn:
+            conn.execute("UPDATE users SET api_key=? WHERE id=?", (api_key, user_id))
+            conn.commit()
 
 
 class WorkingMemory:
