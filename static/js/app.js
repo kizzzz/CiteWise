@@ -1436,11 +1436,14 @@ async function handleAuth() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ username, password }),
         });
-        const data = await resp.json();
+
+        // Parse JSON safely — server may return HTML on 500
+        let data;
+        try { data = await resp.json(); } catch { data = {}; }
 
         if (!resp.ok) {
             if (errEl) {
-                let msg = data.detail || '操作失败';
+                let msg = data.detail || `请求失败 (${resp.status})`;
                 if (Array.isArray(msg)) {
                     msg = msg.map(e => e.msg || String(e)).join('; ');
                 }

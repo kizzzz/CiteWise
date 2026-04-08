@@ -106,6 +106,7 @@ app.add_middleware(
         "http://127.0.0.1:8080",
         "http://localhost:3000",
         "https://cite-wise-mu.vercel.app",
+        "https://citewise-w9op.onrender.com",
     ],
     allow_credentials=False,
     allow_methods=["*"],

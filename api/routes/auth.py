@@ -20,7 +20,7 @@ def _hash_password(password: str) -> str:
     try:
         from passlib.hash import bcrypt as passlib_bcrypt
         return passlib_bcrypt.hash(password)
-    except ImportError:
+    except Exception:
         import hashlib
         return hashlib.sha256(password.encode()).hexdigest()
 
@@ -30,7 +30,7 @@ def _verify_password(password: str, hashed: str) -> bool:
     try:
         from passlib.hash import bcrypt as passlib_bcrypt
         return passlib_bcrypt.verify(password, hashed)
-    except ImportError:
+    except Exception:
         import hashlib
         return hashlib.sha256(password.encode()).hexdigest() == hashed
 

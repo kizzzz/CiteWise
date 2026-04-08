@@ -4,7 +4,7 @@ WORKDIR /opt/render/project/src
 
 # 系统依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential && rm -rf /var/lib/apt/lists/*
+    build-essential libffi-dev && rm -rf /var/lib/apt/lists/*
 
 # Python 依赖 — 先复制 requirements.txt 利用缓存
 COPY requirements.txt .
