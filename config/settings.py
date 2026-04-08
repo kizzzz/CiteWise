@@ -16,11 +16,8 @@ def _get_config(key: str, default: str = "") -> str:
 
 OPENAI_API_KEY = _get_config("OPENAI_API_KEY", "")
 if not OPENAI_API_KEY:
-    import sys
-    if "uvicorn" in sys.modules or any("uvicorn" in arg for arg in sys.argv):
-        raise RuntimeError("OPENAI_API_KEY is required but not found in .env file or environment variables")
     import warnings
-    warnings.warn("OPENAI_API_KEY not set — set it via .env or environment variable before running the app")
+    warnings.warn("OPENAI_API_KEY not set — set it via .env or environment variable")
 OPENAI_BASE_URL = _get_config("OPENAI_BASE_URL", "https://open.bigmodel.cn/api/paas/v4/")
 LLM_MODEL = _get_config("LLM_MODEL", "glm-4.7")
 
