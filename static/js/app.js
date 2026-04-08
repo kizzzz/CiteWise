@@ -3,7 +3,7 @@
 // ============ API Base URL (环境感知) ============
 const API_BASE = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
     ? ''  // 开发环境：同源
-    : 'https://citewise-backend.onrender.com';  // 生产环境：后端地址
+    : 'https://citewise-w9op.onrender.com';  // 生产环境：后端地址
 
 // ============ State ============
 let projects = [];
