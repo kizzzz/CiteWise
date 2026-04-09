@@ -5,17 +5,39 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="X-Content-Type-Options" content="nosniff">
     <title>CiteWise V3 — 智能研究助手</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="vendor/tailwindcss.js"></script>
     <link rel="stylesheet" href="vendor/animate.min.css">
     <script src="vendor/lucide.min.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Dancing+Script:wght@700&family=Inter:wght@300;400;500;600;700&family=Playfair+Display:ital,wght@0,700;1,700&display=swap');
 
+        *, *::before, *::after {
+            box-sizing: border-box;
+        }
+
         body {
             font-family: 'Inter', sans-serif;
             background-color: #f8fafc;
             height: 100vh;
+            width: 100%;
+            margin: 0;
+            padding: 0;
             overflow: hidden;
+            display: flex;
+        }
+
+        /* Layout fallbacks — ensure sidebar + main flex works even without Tailwind */
+        body > aside {
+            width: 18rem;
+            min-width: 18rem;
+            flex-shrink: 0;
+            height: 100%;
+        }
+
+        body > main {
+            flex: 1 1 0%;
+            min-width: 0;
+            height: 100%;
         }
 
         .brand-name {
@@ -54,12 +76,13 @@
         }
 
         .view-section {
-            display: none;
+            display: none !important;
             height: 100%;
+            width: 100%;
         }
 
         .view-section.active {
-            display: flex;
+            display: flex !important;
             flex-direction: column;
         }
 
@@ -627,7 +650,7 @@
         <!-- ============ Modals ============ -->
 
         <!-- Extraction Modal (dimension-card grid layout) -->
-        <div id="summaryModal" class="hidden absolute inset-0 z-50 flex items-center justify-center modal-overlay p-4 text-sm">
+        <div id="summaryModal" class="hidden fixed inset-0 z-50 flex items-center justify-center modal-overlay p-4 text-sm">
             <div class="bg-white w-full max-w-5xl h-[85vh] rounded-3xl shadow-2xl overflow-hidden flex flex-col">
                 <div class="p-6 border-b border-slate-100 flex justify-between bg-slate-50 items-center">
                     <h3 class="text-lg font-bold">结构化比对矩阵</h3>
@@ -664,7 +687,7 @@
         </div>
 
         <!-- Create Agent Modal -->
-        <div id="createAgentModal" class="hidden absolute inset-0 z-50 flex items-center justify-center modal-overlay p-4">
+        <div id="createAgentModal" class="hidden fixed inset-0 z-50 flex items-center justify-center modal-overlay p-4">
             <div class="bg-white w-full max-w-md rounded-3xl p-8 space-y-6 shadow-2xl animate__animated animate__zoomIn text-sm">
                 <div class="flex justify-between items-center">
                     <h3 class="text-xl font-bold text-slate-800">构建自定义子 Agent</h3>
@@ -680,7 +703,7 @@
         </div>
 
         <!-- Add Asset Modal (with install progress) -->
-        <div id="addAssetModal" class="hidden absolute inset-0 z-50 flex items-center justify-center modal-overlay p-4 text-sm">
+        <div id="addAssetModal" class="hidden fixed inset-0 z-50 flex items-center justify-center modal-overlay p-4 text-sm">
             <div class="bg-white w-full max-w-lg rounded-3xl p-8 space-y-6 shadow-2xl animate__animated animate__zoomIn">
                 <div class="flex justify-between items-center text-left">
                     <h3 class="text-xl font-bold text-slate-800" id="assetModalTitle">下载安装新能力</h3>
@@ -704,7 +727,7 @@
         </div>
 
         <!-- Key Modal -->
-        <div id="keyModal" class="hidden absolute inset-0 z-50 flex items-center justify-center modal-overlay p-4 text-sm">
+        <div id="keyModal" class="hidden fixed inset-0 z-50 flex items-center justify-center modal-overlay p-4 text-sm">
             <div class="bg-white w-full max-w-lg rounded-3xl p-8 space-y-5 shadow-2xl animate__animated animate__zoomIn">
                 <div class="flex justify-between items-center">
                     <h3 class="text-lg font-bold">配置 LLM API Key</h3>
@@ -748,7 +771,7 @@
         </div>
 
         <!-- Auth Modal (Login/Register) -->
-        <div id="authModal" class="hidden absolute inset-0 z-50 flex items-center justify-center modal-overlay p-4 text-sm">
+        <div id="authModal" class="hidden fixed inset-0 z-50 flex items-center justify-center modal-overlay p-4 text-sm">
             <div class="bg-white w-full max-w-md rounded-3xl p-8 space-y-5 shadow-2xl animate__animated animate__zoomIn">
                 <div class="flex justify-between items-center">
                     <h3 class="text-lg font-bold" id="authModalTitle">登录</h3>
@@ -765,7 +788,7 @@
         </div>
 
         <!-- Create Draft Modal -->
-        <div id="newDraftModal" class="hidden absolute inset-0 z-50 flex items-center justify-center modal-overlay p-4">
+        <div id="newDraftModal" class="hidden fixed inset-0 z-50 flex items-center justify-center modal-overlay p-4">
             <div class="bg-white w-full max-w-md rounded-3xl shadow-2xl p-8 space-y-4 animate__animated animate__zoomIn">
                 <div class="flex justify-between mb-2">
                     <h3 class="text-xl font-bold">新增章节</h3>
@@ -777,7 +800,7 @@
         </div>
 
         <!-- Create Project Modal -->
-        <div id="newProjectModal" class="hidden absolute inset-0 z-50 flex items-center justify-center modal-overlay p-4">
+        <div id="newProjectModal" class="hidden fixed inset-0 z-50 flex items-center justify-center modal-overlay p-4">
             <div class="bg-white w-full max-w-md rounded-3xl shadow-2xl p-8 space-y-4 animate__animated animate__zoomIn">
                 <div class="flex justify-between mb-2">
                     <h3 class="text-xl font-bold">新建项目</h3>

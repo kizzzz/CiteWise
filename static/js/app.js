@@ -218,6 +218,9 @@ async function handleUploadPapers() {
 
     const xhr = new XMLHttpRequest();
     xhr.open('POST', `${API_BASE}/api/papers/upload`);
+    if (currentUser && currentUser.token) {
+        xhr.setRequestHeader('Authorization', `Bearer ${currentUser.token}`);
+    }
 
     xhr.upload.onprogress = (e) => {
         if (e.lengthComputable) {
@@ -486,9 +489,13 @@ async function handleSendChat() {
             chatBody.api_key = activeKey.apiKey;
             chatBody.base_url = activeKey.baseUrl;
         }
+        const chatHeaders = { 'Content-Type': 'application/json' };
+        if (currentUser && currentUser.token) {
+            chatHeaders['Authorization'] = `Bearer ${currentUser.token}`;
+        }
         const response = await fetch(`${API_BASE}/api/chat`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: chatHeaders,
             body: JSON.stringify(chatBody),
         });
 
@@ -1253,9 +1260,13 @@ async function verifyAndSaveApiKey() {
     if (btn) { btn.disabled = true; btn.textContent = '验证中...'; }
 
     try {
+        const verifyHeaders = { 'Content-Type': 'application/json' };
+        if (currentUser && currentUser.token) {
+            verifyHeaders['Authorization'] = `Bearer ${currentUser.token}`;
+        }
         const resp = await fetch(`${API_BASE}/api/apikeys/verify`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: verifyHeaders,
             body: JSON.stringify({ api_key: apiKey, provider, base_url: baseUrl }),
         });
         const data = await resp.json();
@@ -1287,9 +1298,13 @@ async function verifyAndSaveApiKey() {
             // Also save to backend if logged in
             if (currentUser) {
                 try {
+                    const saveKeyHeaders = { 'Content-Type': 'application/json' };
+                    if (currentUser && currentUser.token) {
+                        saveKeyHeaders['Authorization'] = `Bearer ${currentUser.token}`;
+                    }
                     await fetch(`${API_BASE}/api/apikeys/save`, {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
+                        headers: saveKeyHeaders,
                         body: JSON.stringify({ api_key: apiKey, user_id: currentUser.id }),
                     });
                 } catch { /* non-critical */ }
