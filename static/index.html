@@ -297,6 +297,9 @@
                     <button id="navEval" onclick="switchView('evalView', this); loadEvalDashboard()" class="nav-item w-full flex items-center gap-3 p-3 text-slate-600 hover:bg-slate-100 rounded-xl font-semibold transition-all text-left text-emerald-500">
                         <i data-lucide="activity" class="w-4 h-4"></i> AgentEval
                     </button>
+                    <button id="navAgent" onclick="switchView('agentView', this)" class="nav-item w-full flex items-center gap-3 p-3 text-slate-600 hover:bg-slate-100 rounded-xl font-semibold transition-all text-left text-indigo-500">
+                        <i data-lucide="bot" class="w-4 h-4"></i> Agent 配置
+                    </button>
                 </div>
 
                 <!-- Agent Status -->
@@ -617,6 +620,24 @@
                         </div>
                     </div>
                 </div>
+            </div>
+        </section>
+
+        <!-- View: Agent Config -->
+        <section id="agentView" class="view-section">
+            <div id="agentListView" class="flex flex-col h-full overflow-hidden text-sm">
+                <header class="h-16 border-b border-slate-200 bg-white flex items-center justify-between px-8">
+                    <h2 class="font-bold text-slate-800">Agent 配置中心</h2>
+                    <button onclick="toggleModal('createAgentModal')" class="bg-indigo-600 text-white px-4 py-2 rounded-lg text-xs font-bold hover:bg-indigo-700 transition-all">+ 新建 Agent</button>
+                </header>
+                <div id="agentListContainer" class="p-8 grid grid-cols-1 md:grid-cols-3 gap-6 overflow-y-auto scroll-thin"></div>
+            </div>
+            <div id="agentDetailView" class="hidden flex flex-col h-full animate__animated animate__fadeIn">
+                <header class="h-16 border-b border-slate-200 bg-white flex items-center px-8 gap-4">
+                    <button onclick="closeAgentDetail()" class="p-2 hover:bg-slate-100 rounded-lg text-slate-500"><i data-lucide="arrow-left" class="w-5 h-5"></i></button>
+                    <h3 class="font-bold text-slate-800">Agent 详情</h3>
+                </header>
+                <div class="flex-1 p-8 overflow-y-auto scroll-thin" id="agentDetailContent"></div>
             </div>
         </section>
 

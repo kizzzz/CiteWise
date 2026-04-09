@@ -17,9 +17,15 @@ let currentUser = null; // { id, username, token }
 let authMode = 'login'; // 'login' or 'register'
 
 let agents = [
-    { id: 'research', name: 'Research', icon: 'search', status: 'READY', color: 'blue' },
-    { id: 'writing', name: 'Writing', icon: 'pen-tool', status: 'READY', color: 'purple' },
-    { id: 'analyst', name: 'Analyst', icon: 'hammer', status: 'READY', color: 'slate' }
+    { id: 'research', name: 'Research', icon: 'search', status: 'READY', color: 'blue',
+      prompt: '你是一个专业的学术研究员。你的职责是检索、分析和总结学术文献。请使用严谨的学术语言，准确引用来源。',
+      description: '负责文献检索、知识库 RAG 检索和联网搜索' },
+    { id: 'writing', name: 'Writing', icon: 'pen-tool', status: 'READY', color: 'purple',
+      prompt: '你是一个学术论文写作专家。你的职责是撰写和润色学术论文的各个章节。请遵循学术写作规范，确保逻辑清晰、表达准确。',
+      description: '负责学术论文写作、章节生成和内容润色' },
+    { id: 'analyst', name: 'Analyst', icon: 'hammer', status: 'READY', color: 'slate',
+      prompt: '你是一个数据分析专家。你的职责是进行方法论对比、统计分析，并生成可视化图表。请使用准确的数据和清晰的逻辑进行分析。',
+      description: '负责方法论对比、统计分析和数据可视化' }
 ];
 
 let skills = [
@@ -46,6 +52,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     await loadProjects();
     renderSkillLibrary();
     renderToolLibrary();
+    renderAgentCards();
     renderFields();
 
     // Restore user session from localStorage
@@ -890,7 +897,7 @@ function renderAgentStatus() {
     if (!c) return;
     c.innerHTML = agents.map(a => {
         const statusColor = a.status === 'RUNNING' ? 'text-amber-500' : 'text-green-500';
-        return `<div class="agent-item flex items-center justify-between p-2 px-3 bg-slate-50/50 rounded-lg border border-slate-100 mb-2 text-[11px]">
+        return `<div onclick="switchView('agentView', document.getElementById('navAgent')); setTimeout(() => openAgentDetail('${a.id}'), 100)" class="agent-item flex items-center justify-between p-2 px-3 bg-slate-50/50 rounded-lg border border-slate-100 mb-2 text-[11px] cursor-pointer hover:bg-indigo-50 hover:border-indigo-100 transition-all">
             <span class="flex items-center gap-2">
                 <i data-lucide="${a.icon}" class="w-3 h-3 text-${a.color}-500"></i>
                 ${escapeHtml(a.name)}
@@ -905,16 +912,172 @@ function confirmCreateAgent() {
     const name = document.getElementById('agentNameIn').value.trim();
     if (!name) return;
     const icon = document.getElementById('agentIconIn').value.trim() || 'cpu';
+    const role = document.getElementById('agentRoleIn') ? document.getElementById('agentRoleIn').value.trim() : '';
     agents.push({
         id: Date.now().toString(),
         name: name,
         icon: icon,
         status: 'READY',
-        color: 'indigo'
+        color: 'indigo',
+        prompt: role || `你是${name}，一个专业的 AI 助手。`,
+        description: role || '自定义 Agent',
     });
     renderAgentStatus();
+    renderAgentCards();
     toggleModal('createAgentModal');
     showToast('Agent 节点就绪', 'success');
+}
+
+// ============ Agent Config Center ============
+function renderAgentCards() {
+    const c = document.getElementById('agentListContainer');
+    if (!c) return;
+    if (agents.length === 0) {
+        c.innerHTML = '<div class="col-span-3 text-center text-slate-400 py-12">暂无 Agent，点击右上角新建</div>';
+        return;
+    }
+    c.innerHTML = agents.map(a => {
+        const assignedSkills = skills.filter(s => s.agent === a.id);
+        return `<div onclick="openAgentDetail('${a.id}')" class="interactive-card bg-white p-6 rounded-3xl border border-slate-100 shadow-sm cursor-pointer hover:border-indigo-200 transition-all">
+            <div class="flex justify-between items-start mb-4">
+                <div class="p-3 bg-${a.color}-50 text-${a.color}-600 rounded-xl">
+                    <i data-lucide="${a.icon}" class="w-6 h-6"></i>
+                </div>
+                <span class="text-[8px] font-bold uppercase px-2 py-1 rounded ${a.status === 'RUNNING' ? 'bg-amber-50 text-amber-600' : 'bg-green-50 text-green-600'}">${a.status}</span>
+            </div>
+            <h4 class="font-bold text-slate-800 text-base mb-1">${escapeHtml(a.name)}</h4>
+            <p class="text-xs text-slate-500 mb-3">${escapeHtml(a.description || '自定义 Agent')}</p>
+            <div class="flex items-center gap-2 text-[10px] text-slate-400">
+                <i data-lucide="zap" class="w-3 h-3"></i>
+                <span>${assignedSkills.length} 个 Skill</span>
+            </div>
+        </div>`;
+    }).join('');
+    lucide.createIcons();
+}
+
+function openAgentDetail(agentId) {
+    const a = agents.find(x => x.id === agentId);
+    if (!a) return;
+    safeClassAction('agentListView', 'add', 'hidden');
+    safeClassAction('agentDetailView', 'remove', 'hidden');
+
+    const assignedSkills = skills.filter(s => s.agent === agentId);
+    const availableSkills = skills.filter(s => s.agent !== agentId);
+
+    const el = document.getElementById('agentDetailContent');
+    if (!el) return;
+
+    el.innerHTML = `
+        <div class="max-w-4xl mx-auto space-y-8">
+            <div class="p-8 bg-${a.color}-50 rounded-3xl flex items-center gap-6">
+                <div class="p-4 bg-${a.color}-100 rounded-2xl"><i data-lucide="${a.icon}" class="w-10 h-10 text-${a.color}-600"></i></div>
+                <div class="flex-1">
+                    <h2 class="text-2xl font-bold text-slate-800">${escapeHtml(a.name)}</h2>
+                    <p class="text-sm text-slate-500 mt-1">${escapeHtml(a.description || '自定义 Agent')}</p>
+                    <span class="inline-block mt-2 text-[10px] font-bold uppercase px-2.5 py-1 rounded-full ${a.status === 'RUNNING' ? 'bg-amber-100 text-amber-700' : 'bg-green-100 text-green-700'}">${a.status}</span>
+                </div>
+                <button onclick="deleteAgent('${a.id}')" class="p-3 hover:bg-red-100 rounded-xl text-slate-400 hover:text-red-500 transition-all" title="删除 Agent"><i data-lucide="trash-2" class="w-5 h-5"></i></button>
+            </div>
+
+            <div class="bg-white border border-slate-200 rounded-2xl p-6 space-y-3">
+                <div class="flex justify-between items-center">
+                    <h3 class="font-bold text-slate-700">系统提示词 (System Prompt)</h3>
+                    <span class="text-[10px] text-slate-400">定义 Agent 的角色和行为</span>
+                </div>
+                <textarea id="agentPromptEditor" class="w-full h-40 bg-slate-50 border border-slate-200 p-4 rounded-xl font-mono text-sm resize-y outline-none focus:ring-2 focus:ring-indigo-500" placeholder="输入该 Agent 的系统提示词...">${escapeHtml(a.prompt || '')}</textarea>
+                <button onclick="saveAgentPrompt('${a.id}')" class="px-6 py-3 bg-indigo-600 text-white rounded-xl font-bold text-sm hover:bg-indigo-700 transition-all">保存提示词</button>
+            </div>
+
+            <div class="bg-white border border-slate-200 rounded-2xl p-6 space-y-4">
+                <div class="flex justify-between items-center">
+                    <h3 class="font-bold text-slate-700">已分配的 Skills</h3>
+                    <span class="text-[10px] text-slate-400">${assignedSkills.length} 个</span>
+                </div>
+                ${assignedSkills.length > 0 ? assignedSkills.map(s => `
+                    <div class="flex items-center justify-between p-4 bg-amber-50 border border-amber-100 rounded-xl">
+                        <div class="flex items-center gap-3">
+                            <div class="p-2 bg-amber-100 rounded-lg"><i data-lucide="${s.icon}" class="w-4 h-4 text-amber-600"></i></div>
+                            <div>
+                                <p class="font-bold text-sm text-slate-800">${escapeHtml(s.title)}</p>
+                                <p class="text-[10px] text-slate-400">${escapeHtml(s.desc)}</p>
+                            </div>
+                        </div>
+                        <button onclick="unassignSkill(${s.id}, '${a.id}')" class="text-[10px] px-3 py-1.5 rounded-lg bg-white border border-red-200 text-red-500 hover:bg-red-50 font-bold">移除</button>
+                    </div>
+                `).join('') : '<div class="text-center text-slate-400 py-6 text-xs">暂无分配的 Skill</div>'}
+            </div>
+
+            ${availableSkills.length > 0 ? `
+            <div class="bg-white border border-slate-200 rounded-2xl p-6 space-y-4">
+                <h3 class="font-bold text-slate-700">可分配的 Skills</h3>
+                <div class="grid grid-cols-2 gap-3">
+                    ${availableSkills.map(s => `
+                        <div class="flex items-center justify-between p-3 bg-slate-50 border border-slate-100 rounded-xl">
+                            <div class="flex items-center gap-2">
+                                <i data-lucide="${s.icon}" class="w-4 h-4 text-slate-400"></i>
+                                <span class="text-sm font-semibold text-slate-700">${escapeHtml(s.title)}</span>
+                            </div>
+                            <button onclick="assignSkill(${s.id}, '${a.id}')" class="text-[10px] px-3 py-1.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 font-bold">分配</button>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+            ` : ''}
+        </div>
+    `;
+    lucide.createIcons();
+}
+
+function closeAgentDetail() {
+    safeClassAction('agentListView', 'remove', 'hidden');
+    safeClassAction('agentDetailView', 'add', 'hidden');
+}
+
+function saveAgentPrompt(agentId) {
+    const a = agents.find(x => x.id === agentId);
+    const editor = document.getElementById('agentPromptEditor');
+    if (a && editor) {
+        a.prompt = editor.value;
+        showToast('提示词已保存', 'success');
+    }
+}
+
+function assignSkill(skillId, agentId) {
+    const s = skills.find(x => x.id === skillId);
+    if (s) {
+        s.agent = agentId;
+        openAgentDetail(agentId);
+        renderSkillLibrary();
+        renderAgentCards();
+        showToast(`已将「${s.title}」分配给 ${agents.find(a => a.id === agentId)?.name}`, 'success');
+    }
+}
+
+function unassignSkill(skillId, agentId) {
+    const s = skills.find(x => x.id === skillId);
+    if (s) {
+        s.agent = '';
+        openAgentDetail(agentId);
+        renderSkillLibrary();
+        renderAgentCards();
+        showToast(`已移除「${s.title}」`, 'success');
+    }
+}
+
+function deleteAgent(agentId) {
+    if (agents.length <= 1) {
+        showToast('至少保留一个 Agent', 'error');
+        return;
+    }
+    if (!confirm(`确定删除 Agent「${agents.find(a => a.id === agentId)?.name}」？`)) return;
+    agents = agents.filter(a => a.id !== agentId);
+    skills.forEach(s => { if (s.agent === agentId) s.agent = ''; });
+    closeAgentDetail();
+    renderAgentCards();
+    renderAgentStatus();
+    renderSkillLibrary();
+    showToast('Agent 已删除', 'success');
 }
 
 // ============ Skill & Tool Library ============
@@ -1364,6 +1527,7 @@ function switchView(id, btn) {
     closeDraftEditor();
     closeAssetDetail('skill');
     closeAssetDetail('tool');
+    closeAgentDetail();
     closeAllDropdowns();
 }
 
