@@ -43,12 +43,13 @@ class LLMClient:
             )
         return self._async_client
 
-    def get_async_client(self, api_key: Optional[str] = None):
-        """Get async client with optional user API key"""
+    def get_async_client(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
+        """Get async client with optional user API key and base URL"""
         key = self._get_api_key(api_key)
-        if key != OPENAI_API_KEY:
+        url = base_url or OPENAI_BASE_URL
+        if key != OPENAI_API_KEY or url != OPENAI_BASE_URL:
             from openai import AsyncOpenAI
-            return AsyncOpenAI(api_key=key, base_url=OPENAI_BASE_URL)
+            return AsyncOpenAI(api_key=key, base_url=url)
         return self.async_client
 
     # ===== 同步接口 (兼容旧代码) =====
@@ -106,9 +107,10 @@ class LLMClient:
             raise LLMError(f"LLM 异步调用失败: {str(e)}") from e
 
     async def achat_stream(self, messages: list[dict], temperature: float = 0.7,
-                           max_tokens: int = 4000, api_key: Optional[str] = None) -> AsyncGenerator[str, None]:
+                           max_tokens: int = 4000, api_key: Optional[str] = None,
+                           base_url: Optional[str] = None) -> AsyncGenerator[str, None]:
         """异步流式对话 — 逐 token yield"""
-        client = self.get_async_client(api_key)
+        client = self.get_async_client(api_key, base_url)
         try:
             stream = await client.chat.completions.create(
                 model=self.model,

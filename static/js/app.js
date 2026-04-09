@@ -409,12 +409,18 @@ async function handleSendSubChat() {
 
     try {
         const content = document.getElementById('editableArea').innerText;
-        const result = await (await api('POST', '/chat/sub', {
+        const subBody = {
             message: text,
             project_id: currentProjectId,
             section_name: currentDraftName,
             content: content,
-        })).json();
+        };
+        const activeKey2 = getActiveApiKey();
+        if (activeKey2) {
+            subBody.api_key = activeKey2.apiKey;
+            subBody.base_url = activeKey2.baseUrl;
+        }
+        const result = await (await api('POST', '/chat/sub', subBody)).json();
 
         document.getElementById(aiBubbleId).innerHTML = escapeHtml(result.content || '处理完成');
 
@@ -473,10 +479,17 @@ async function handleSendChat() {
     const matchedTool = tools.find(t => t.trigger.split(', ').some(kw => text.includes(kw)));
 
     try {
+        // Attach user API key if available
+        const activeKey = getActiveApiKey();
+        const chatBody = { message: text, project_id: currentProjectId };
+        if (activeKey) {
+            chatBody.api_key = activeKey.apiKey;
+            chatBody.base_url = activeKey.baseUrl;
+        }
         const response = await fetch(`${API_BASE}/api/chat`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message: text, project_id: currentProjectId }),
+            body: JSON.stringify(chatBody),
         });
 
         // If a tool was matched, show the invocation card

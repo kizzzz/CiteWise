@@ -21,18 +21,22 @@ router = APIRouter()
 JWT_SECRET = os.getenv("JWT_SECRET", "citewise_jwt_secret_change_in_production")
 JWT_EXPIRE_HOURS = 72
 
-# Password hashing — pure Python, no C extensions
-_SALT = b"citewise_demo_salt_2026"
+# Password hashing — PBKDF2 with per-user salt, pure Python
+_ITERATIONS = 200_000
 
 
-def _hash_password(password: str) -> str:
-    """SHA-256 + HMAC salt — pure Python, zero external deps"""
-    return hmac.new(_SALT, password.encode(), hashlib.sha256).hexdigest()
+def _hash_password(password: str, salt: str = None) -> tuple[str, str]:
+    """PBKDF2-HMAC-SHA256 with per-user random salt — pure Python"""
+    if salt is None:
+        salt = os.urandom(16).hex()
+    h = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), _ITERATIONS).hex()
+    return h, salt
 
 
-def _verify_password(password: str, hashed: str) -> bool:
-    """Verify password against hash"""
-    return hmac.compare_digest(_hash_password(password), hashed)
+def _verify_password(password: str, stored_hash: str, salt: str) -> bool:
+    """Verify password against stored hash and salt"""
+    h, _ = _hash_password(password, salt)
+    return hmac.compare_digest(h, stored_hash)
 
 
 def _create_jwt_token(user_id: str, username: str) -> str:
@@ -91,8 +95,8 @@ async def register(req: RegisterRequest):
         if existing:
             raise HTTPException(status_code=409, detail="用户名已存在")
 
-        password_hash = _hash_password(req.password)
-        user_id = project_memory.create_user(req.username, password_hash)
+        password_hash, password_salt = _hash_password(req.password)
+        user_id = project_memory.create_user(req.username, password_hash, password_salt)
 
         if not user_id:
             raise HTTPException(status_code=500, detail="注册失败")
@@ -106,7 +110,7 @@ async def register(req: RegisterRequest):
         raise
     except Exception as e:
         logger.error(f"注册异常: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"注册失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="注册失败，请稍后重试")
 
 
 @router.post("/auth/login")
@@ -119,7 +123,7 @@ async def login(req: LoginRequest):
         if not user:
             raise HTTPException(status_code=401, detail="用户名或密码错误")
 
-        if not _verify_password(req.password, user["password_hash"]):
+        if not _verify_password(req.password, user["password_hash"], user.get("password_salt", "")):
             raise HTTPException(status_code=401, detail="用户名或密码错误")
 
         token = _create_jwt_token(user["id"], user["username"])
@@ -131,7 +135,7 @@ async def login(req: LoginRequest):
         raise
     except Exception as e:
         logger.error(f"登录异常: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"登录失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="登录失败，请稍后重试")
 
 
 @router.get("/auth/me")

@@ -1,4 +1,4 @@
-"""API Key 管理路由 — 多供应商 API Key 验证/保存/获取"""
+"""API Key 管理路由 — 多供应商 API Key 验证与配置记录"""
 import logging
 
 from fastapi import APIRouter, HTTPException, Request
@@ -113,40 +113,20 @@ async def verify_api_key(req: ApiKeyVerifyRequest):
 
 
 @router.post("/apikeys/save")
-async def save_user_api_key(req: Request):
-    """保存用户 API Key 配置到后端"""
+async def save_user_api_key_config(req: Request):
+    """记录用户已配置 API Key（仅保存布尔标记，密钥本身由前端 localStorage 管理）"""
     body = await req.json()
-    api_key = body.get("api_key", "").strip()
     user_id = body.get("user_id", "")
+    has_key = bool(body.get("api_key", "").strip())
 
-    if not api_key:
-        raise HTTPException(status_code=422, detail="API Key 不能为空")
+    if not user_id:
+        return {"status": "ok", "message": "API Key 仅存储在本地"}
 
-    from src.core.memory import project_memory
-
-    if user_id:
-        user = project_memory.get_user_by_id(user_id)
-        if user:
-            import base64
-            encrypted = base64.b64encode(api_key.encode()).decode()
-            project_memory.update_user_api_key(user_id, encrypted)
-            return {"status": "ok", "message": "API Key 已保存"}
-
-    return {"status": "ok", "message": "API Key 仅存储在本地"}
-
-
-@router.get("/apikeys/{user_id}")
-async def get_user_api_key(user_id: str):
-    """获取用户的 API Key（解密）"""
     from src.core.memory import project_memory
 
     user = project_memory.get_user_by_id(user_id)
-    if not user or not user.get("api_key"):
-        return {"api_key": ""}
+    if user:
+        project_memory.update_user_api_key(user_id, "configured" if has_key else "")
+        return {"status": "ok", "message": "API Key 配置已记录"}
 
-    import base64
-    try:
-        decrypted = base64.b64decode(user["api_key"]).decode()
-        return {"api_key": decrypted}
-    except Exception:
-        return {"api_key": ""}
+    return {"status": "ok", "message": "API Key 仅存储在本地"}

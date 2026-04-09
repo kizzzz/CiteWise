@@ -217,7 +217,8 @@ async def _async_generate_section(section_name, section_topic, research_result,
 # ========== Streaming Response Builder ==========
 # This function provides direct token-level streaming for the chat route.
 
-async def stream_chat_response(user_input: str, project_id: str):
+async def stream_chat_response(user_input: str, project_id: str,
+                                api_key: str = None, base_url: str = None):
     """直接流式对话 — 路由 → RAG → 流式 LLM 输出
 
     Yields SSE events: agent_start, agent_end, token, content, citations, done
@@ -306,7 +307,7 @@ async def stream_chat_response(user_input: str, project_id: str):
     # Token-level streaming
     collected_tokens = []
     try:
-        async for token in llm_client.achat_stream(messages, temperature=0.7):
+        async for token in llm_client.achat_stream(messages, temperature=0.7, api_key=api_key, base_url=base_url):
             collected_tokens.append(token)
             yield {"event": "token", "data": json.dumps({"text": token}, ensure_ascii=False)}
     except Exception as e:

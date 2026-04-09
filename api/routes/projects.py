@@ -20,7 +20,11 @@ async def list_projects():
 async def create_project(req: ProjectCreate):
     from src.core.memory import project_memory, global_profile
     pid = project_memory.create_project(req.name, req.topic)
-    global_profile.update("research_field", req.topic)
+    # global_profile.update is non-critical — don't fail project creation if it errors
+    try:
+        global_profile.update("research_field", req.topic)
+    except Exception as e:
+        logger.warning(f"Failed to update global profile: {e}")
     project = project_memory.get_project(pid)
     return project
 

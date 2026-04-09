@@ -183,6 +183,10 @@ class ProjectMemory:
                 conn.execute("ALTER TABLE users ADD COLUMN api_key_encrypted TEXT DEFAULT ''")
             except Exception:
                 pass
+            try:
+                conn.execute("ALTER TABLE users ADD COLUMN password_salt TEXT DEFAULT ''")
+            except Exception:
+                pass
             conn.commit()
 
     # --- 项目管理 ---
@@ -384,13 +388,13 @@ class ProjectMemory:
         return [dict(r) for r in rows]
 
     # --- 用户管理 ---
-    def create_user(self, username: str, password_hash: str) -> Optional[str]:
+    def create_user(self, username: str, password_hash: str, password_salt: str = "") -> Optional[str]:
         uid = f"user_{uuid.uuid4().hex[:8]}"
         try:
             with self._get_conn() as conn:
                 conn.execute(
-                    "INSERT INTO users (id, username, password_hash) VALUES (?, ?, ?)",
-                    (uid, username, password_hash)
+                    "INSERT INTO users (id, username, password_hash, password_salt) VALUES (?, ?, ?, ?)",
+                    (uid, username, password_hash, password_salt)
                 )
                 conn.commit()
             return uid

@@ -33,7 +33,11 @@ async def chat_endpoint(req: ChatRequest):
         try:
             from src.core.async_graph import stream_chat_response
 
-            async for event in stream_chat_response(req.message, req.project_id):
+            async for event in stream_chat_response(
+                req.message, req.project_id,
+                api_key=req.api_key or None,
+                base_url=req.base_url or None,
+            ):
                 yield event
 
         except Exception as e:

@@ -1,5 +1,6 @@
 """论文管理路由"""
 import os
+import uuid
 import json
 import asyncio
 import logging
@@ -47,12 +48,14 @@ async def upload_papers_stream(files: list[UploadFile] = File(...), project_id: 
         }, ensure_ascii=False)}
 
         for idx, f in enumerate(files):
-            safe_name = os.path.basename(f.filename or "unknown")
+            original_name = os.path.basename(f.filename or "unknown")
+            ext = get_file_extension(original_name)
+            safe_name = f"{uuid.uuid4().hex}{ext}"
 
             # Validate file extension
-            if not is_supported(safe_name):
+            if not is_supported(original_name):
                 yield {"event": "warning", "data": json.dumps({
-                    "file": safe_name, "error": "不支持的文件格式",
+                    "file": original_name, "error": "不支持的文件格式",
                 }, ensure_ascii=False)}
                 continue
 
@@ -60,7 +63,7 @@ async def upload_papers_stream(files: list[UploadFile] = File(...), project_id: 
             content = await f.read()
             if len(content) > MAX_FILE_SIZE:
                 yield {"event": "warning", "data": json.dumps({
-                    "file": safe_name, "error": "File exceeds 50MB size limit",
+                    "file": original_name, "error": "File exceeds 50MB size limit",
                 }, ensure_ascii=False)}
                 continue
 
@@ -69,7 +72,7 @@ async def upload_papers_stream(files: list[UploadFile] = File(...), project_id: 
                 fp.write(content)
 
             yield {"event": "progress", "data": json.dumps({
-                "phase": "parsing", "file": safe_name,
+                "phase": "parsing", "file": original_name,
                 "current": idx + 1, "total": total,
             }, ensure_ascii=False)}
 
@@ -85,7 +88,7 @@ async def upload_papers_stream(files: list[UploadFile] = File(...), project_id: 
 
                 project_memory.add_paper(
                     data["paper_id"], project_id,
-                    data.get("title", f.filename), data.get("authors", ""),
+                    data.get("title", original_name), data.get("authors", ""),
                     data.get("year", 0), safe_name, len(chunks),
                     raw_text=raw_text, sections_json=sections_json
                 )
@@ -103,15 +106,15 @@ async def upload_papers_stream(files: list[UploadFile] = File(...), project_id: 
                 processed += 1
 
                 yield {"event": "progress", "data": json.dumps({
-                    "phase": "parsed", "file": safe_name,
+                    "phase": "parsed", "file": original_name,
                     "chunks": len(chunks),
                     "current": idx + 1, "total": total,
                 }, ensure_ascii=False)}
 
             except Exception as e:
-                logger.error(f"解析 {safe_name} 失败: {e}")
+                logger.error(f"解析 {original_name} 失败: {e}", exc_info=True)
                 yield {"event": "warning", "data": json.dumps({
-                    "file": safe_name, "error": f"文件解析失败: {str(e)}",
+                    "file": original_name, "error": "文件解析失败，请稍后重试",
                 }, ensure_ascii=False)}
 
         # 索引阶段
@@ -149,17 +152,19 @@ async def _process_uploads(files: list[UploadFile], project_id: str) -> dict:
     processed = 0
 
     for f in files:
-        safe_name = os.path.basename(f.filename or "unknown")
+        original_name = os.path.basename(f.filename or "unknown")
+        ext = get_file_extension(original_name)
+        safe_name = f"{uuid.uuid4().hex}{ext}"
 
         # Validate file extension
-        if not is_supported(safe_name):
-            logger.warning(f"跳过不支持的文件格式: {safe_name}")
+        if not is_supported(original_name):
+            logger.warning(f"跳过不支持的文件格式: {original_name}")
             continue
 
         # Read content for validation
         file_content = await f.read()
         if len(file_content) > MAX_FILE_SIZE:
-            logger.warning(f"跳过超大文件: {safe_name}")
+            logger.warning(f"跳过超大文件: {original_name}")
             continue
 
         path = os.path.join(PAPERS_DIR, safe_name)
@@ -176,7 +181,7 @@ async def _process_uploads(files: list[UploadFile], project_id: str) -> dict:
             raw_text = data.get("raw_text", "")
             project_memory.add_paper(
                 data["paper_id"], project_id,
-                data.get("title", f.filename), data.get("authors", ""),
+                data.get("title", original_name), data.get("authors", ""),
                 data.get("year", 0), safe_name, len(chunks),
                 raw_text=raw_text, sections_json=sections_json
             )

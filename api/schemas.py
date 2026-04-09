@@ -5,6 +5,8 @@ from pydantic import BaseModel, Field
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=2000, description="用户消息")
     project_id: str = Field(..., min_length=1, description="项目ID")
+    api_key: str = Field("", description="用户自带 API Key（可选）")
+    base_url: str = Field("", description="用户自定义 Base URL（可选）")
 
 
 class SubChatRequest(BaseModel):
@@ -12,6 +14,8 @@ class SubChatRequest(BaseModel):
     project_id: str = Field(..., min_length=1, description="项目ID")
     section_name: str = Field(..., min_length=1, description="章节名称")
     content: str = Field("", description="当前章节内容")
+    api_key: str = Field("", description="用户自带 API Key（可选）")
+    base_url: str = Field("", description="用户自定义 Base URL（可选）")
 
 
 class ProjectCreate(BaseModel):
