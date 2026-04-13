@@ -124,6 +124,11 @@ async function api(method, path, body = null) {
 async function loadProjects() {
     try {
         projects = await (await api('GET', '/projects')).json();
+        if (projects.length === 0) {
+            // Auto-create a default project so chat works immediately
+            const resp = await (await api('POST', '/projects', { name: '默认研究项目', topic: '学术研究' })).json();
+            projects = await (await api('GET', '/projects')).json();
+        }
         renderProjectList();
         if (projects.length > 0 && !currentProjectId) {
             await selectProject(projects[0].id);
