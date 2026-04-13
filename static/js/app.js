@@ -78,6 +78,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
     renderApiKeyList();
+    initModelSelector();
 
     // Enter key for chat input
     document.getElementById('chatInput').addEventListener('keypress', (e) => {
@@ -93,6 +94,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Close dropdowns on click outside
     window.addEventListener('click', () => {
         document.querySelectorAll('.dropdown-menu').forEach(d => d.classList.remove('show'));
+        // Close model dropdown
+        const mdl = document.getElementById('modelDropdownList');
+        const mdb = document.getElementById('modelDropdownBtn');
+        if (mdl) mdl.classList.remove('show');
+        if (mdb) mdb.classList.remove('open');
     });
 });
 
@@ -491,10 +497,14 @@ async function handleSendChat() {
     try {
         // Attach user API key if available
         const activeKey = getActiveApiKey();
+        const selectedModel = document.getElementById('modelSelect')?.value || '';
         const chatBody = { message: text, project_id: currentProjectId };
         if (activeKey) {
             chatBody.api_key = activeKey.apiKey;
             chatBody.base_url = activeKey.baseUrl;
+        }
+        if (selectedModel) {
+            chatBody.model = selectedModel;
         }
         const chatHeaders = { 'Content-Type': 'application/json' };
         if (currentUser && currentUser.token) {
@@ -528,16 +538,17 @@ async function handleSendChat() {
             if (done) break;
             buffer += decoder.decode(value, { stream: true });
 
-            // Parse SSE events from buffer
-            const parts = buffer.split('\n\n');
+            // Parse SSE events from buffer (handle both \n\n and \r\n\r\n)
+            const parts = buffer.split(/\r?\n\r?\n/);
             buffer = parts.pop() || '';
 
             for (const part of parts) {
                 let eventType = '';
                 let data = '';
                 for (const line of part.split('\n')) {
-                    if (line.startsWith('event: ')) eventType = line.slice(7);
-                    if (line.startsWith('data: ')) data = line.slice(6);
+                    const trimmed = line.replace(/\r$/, '');
+                    if (trimmed.startsWith('event: ')) eventType = trimmed.slice(7);
+                    if (trimmed.startsWith('data: ')) data = trimmed.slice(6);
                 }
                 if (eventType && data) {
                     try { data = JSON.parse(data); } catch { /* keep as string */ }
@@ -1309,6 +1320,73 @@ const PROVIDER_DEFAULTS = {
     custom:   { name: '自定义',            baseUrl: '' },
 };
 
+// ============ Model Selector ============
+function toggleModelDropdown(e) {
+    if (e) e.stopPropagation();
+    const list = document.getElementById('modelDropdownList');
+    const btn = document.getElementById('modelDropdownBtn');
+    if (!list || !btn) return;
+    list.classList.toggle('show');
+    btn.classList.toggle('open');
+}
+
+function selectModel(value, label) {
+    const hidden = document.getElementById('modelSelect');
+    const labelEl = document.getElementById('modelDropdownLabel');
+    if (hidden) hidden.value = value;
+    if (labelEl) labelEl.textContent = label || '默认模型';
+    // Update active state
+    document.querySelectorAll('.model-dropdown-list .model-option').forEach(opt => {
+        opt.classList.toggle('active', opt.dataset.value === value);
+    });
+    // Close dropdown
+    const list = document.getElementById('modelDropdownList');
+    const btn = document.getElementById('modelDropdownBtn');
+    if (list) list.classList.remove('show');
+    if (btn) btn.classList.remove('open');
+}
+
+function populateModelSelector(models) {
+    const list = document.getElementById('modelDropdownList');
+    if (!list) return;
+    const currentValue = document.getElementById('modelSelect')?.value || '';
+    list.innerHTML = '';
+
+    // Default model option
+    const defaultOpt = document.createElement('div');
+    defaultOpt.className = 'model-option' + (!currentValue ? ' active' : '');
+    defaultOpt.dataset.value = '';
+    defaultOpt.textContent = '默认模型';
+    defaultOpt.onclick = (e) => { e.stopPropagation(); selectModel('', '默认模型'); };
+    list.appendChild(defaultOpt);
+
+    models.forEach(m => {
+        const opt = document.createElement('div');
+        opt.className = 'model-option' + (currentValue === m ? ' active' : '');
+        opt.dataset.value = m;
+        opt.textContent = m;
+        opt.onclick = (e) => { e.stopPropagation(); selectModel(m, m); };
+        list.appendChild(opt);
+    });
+
+    // Update label
+    if (currentValue && models.includes(currentValue)) {
+        const labelEl = document.getElementById('modelDropdownLabel');
+        if (labelEl) labelEl.textContent = currentValue;
+    }
+}
+
+// Init model selector from saved API keys on load
+function initModelSelector() {
+    const keys = loadApiKeysFromStorage();
+    const active = keys.find(k => k.active);
+    if (active && active.models && active.models.length > 0) {
+        populateModelSelector(active.models);
+    } else {
+        populateModelSelector([]);
+    }
+}
+
 function loadApiKeysFromStorage() {
     const saved = localStorage.getItem('citewise_api_keys');
     if (saved) {
@@ -1443,6 +1521,7 @@ async function verifyAndSaveApiKey() {
                 provider,
                 apiKey,
                 baseUrl: data.base_url || baseUrl || PROVIDER_DEFAULTS[provider]?.baseUrl || '',
+                models: data.models || [],
                 active: true,
             };
             if (existingIdx >= 0) {
@@ -1457,6 +1536,7 @@ async function verifyAndSaveApiKey() {
             });
             saveApiKeysToStorage(keys);
             renderApiKeyList();
+            populateModelSelector(data.models || []);
 
             // Also save to backend if logged in
             if (currentUser) {

@@ -95,6 +95,7 @@ async def verify_api_key(req: ApiKeyVerifyRequest):
                 models = [m.get("id", "") for m in data.get("data", [])]
                 return {
                     "valid": True,
+                    "models": models,
                     "models_count": len(models),
                     "provider": prov["name"],
                     "base_url": base_url or prov["base_url"],

@@ -218,7 +218,8 @@ async def _async_generate_section(section_name, section_topic, research_result,
 # This function provides direct token-level streaming for the chat route.
 
 async def stream_chat_response(user_input: str, project_id: str,
-                                api_key: str = None, base_url: str = None):
+                                api_key: str = None, base_url: str = None,
+                                model: str = None):
     """直接流式对话 — 路由 → RAG → 流式 LLM 输出
 
     Yields SSE events: agent_start, agent_end, token, content, citations, done
@@ -236,7 +237,7 @@ async def stream_chat_response(user_input: str, project_id: str,
         "agent": "Supervisor", "detail": "分析意图..."
     }, ensure_ascii=False)}
 
-    route_result = _router.route(user_input)
+    route_result = _router.process(user_input, project_id)
     intent = route_result.get("intent", "explore")
     yield {"event": "agent_end", "data": json.dumps({
         "agent": "Supervisor", "detail": f"意图: {intent}"
@@ -307,7 +308,7 @@ async def stream_chat_response(user_input: str, project_id: str,
     # Token-level streaming
     collected_tokens = []
     try:
-        async for token in llm_client.achat_stream(messages, temperature=0.7, api_key=api_key, base_url=base_url):
+        async for token in llm_client.achat_stream(messages, temperature=0.7, api_key=api_key, base_url=base_url, model=model):
             collected_tokens.append(token)
             yield {"event": "token", "data": json.dumps({"text": token}, ensure_ascii=False)}
     except Exception as e:

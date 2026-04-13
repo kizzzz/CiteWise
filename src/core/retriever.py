@@ -98,8 +98,13 @@ def rerank_by_relevance(query: str, candidates: list[dict], top_k: int = RERANK_
     return [c for c, s in scored[:top_k]]
 
 
-def hybrid_search(query: str, top_k: int = RERANK_TOP_K, where: dict = None) -> list[dict]:
-    """混合检索主入口：向量 + BM25 → RRF 融合 → 重排序"""
+def hybrid_search(query: str, top_k: int = RERANK_TOP_K, where: dict = None,
+                  project_id: str = None) -> list[dict]:
+    """混合检索主入口：向量 + BM25 → RRF 融合 → 重排序
+
+    project_id 参数接受但不用于过滤（Chroma metadata 中无此字段），
+    保留参数以兼容调用方签名。后续可按 paper_id 列表过滤。
+    """
     # 1. 向量检索
     vector_results = vector_store.vector_search(query, top_k=VECTOR_TOP_K, where=where)
 
@@ -141,6 +146,17 @@ def format_chunks_with_citations(chunks: list[dict]) -> str:
     return "\n\n".join(formatted)
 
 
+def _normalize_author(author: str) -> str:
+    """标准化作者名用于模糊匹配：去'等'/'et al.'，取姓氏部分"""
+    author = author.strip()
+    # 去掉 "等" / "et al." 后缀
+    author = re.sub(r'\s*等\.?\s*$', '', author)
+    author = re.sub(r'\s*et al\.?\s*$', '', author, flags=re.IGNORECASE)
+    # 取第一个姓氏/词
+    parts = author.split()
+    return parts[0].lower() if parts else author.lower()
+
+
 def validate_citations(generated_text: str, retrieved_chunks: list[dict]) -> dict:
     """校验生成文本中的引用是否都有检索依据"""
     # 提取引用（英文 [Author et al., 2025] + 中文 [张明等, 2023]）
@@ -148,16 +164,33 @@ def validate_citations(generated_text: str, retrieved_chunks: list[dict]) -> dic
     zh_citations = re.findall(r'\[([\u4e00-\u9fff]+等?,\s*\d{4})\]', generated_text)
     citations_in_text = en_citations + zh_citations
 
-    # 有效引用集合
+    # 有效引用集合 — 同时建立 (year, normalized_author) 索引
     valid_refs = set()
+    year_author_pairs = []
     for c in retrieved_chunks:
         meta = c.get("metadata", {})
-        authors = meta.get("authors", "")
-        year = meta.get("year", "")
+        authors = meta.get("authors", "") or c.get("authors", "")
+        year = meta.get("year", "") or c.get("year", "")
         if authors and year:
             valid_refs.add(f"{authors}, {year}")
+            year_author_pairs.append((str(year), _normalize_author(authors)))
 
-    unverified = [c for c in citations_in_text if c not in valid_refs]
+    # 精确匹配 + 模糊匹配
+    unverified = []
+    for cite in citations_in_text:
+        if cite in valid_refs:
+            continue
+        # 模糊匹配：提取引用的年份和作者
+        cite_year_match = re.search(r'(\d{4})', cite)
+        cite_year = cite_year_match.group(1) if cite_year_match else ""
+        cite_author = _normalize_author(re.sub(r',?\s*\d{4}$', '', cite))
+        matched = False
+        for ref_year, ref_author in year_author_pairs:
+            if cite_year == ref_year and cite_author == ref_author:
+                matched = True
+                break
+        if not matched:
+            unverified.append(cite)
 
     return {
         "total_citations": len(citations_in_text),

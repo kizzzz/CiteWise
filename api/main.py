@@ -102,6 +102,8 @@ async def rate_limit_middleware(request: Request, call_next):
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
+        "http://localhost:5328",
+        "http://127.0.0.1:5328",
         "http://localhost:10000",
         "http://127.0.0.1:10000",
         "http://localhost:8080",

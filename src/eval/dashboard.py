@@ -40,11 +40,15 @@ async def submit_user_rating(req: EvalRateRequest):
         return {"status": "error", "message": "Eval DB not initialized"}
     import sqlite3
     conn = sqlite3.connect(_EVAL_DB_PATH)
-    # SQLite doesn't support UPDATE ... ORDER BY ... LIMIT, use subquery instead
-    conn.execute(
-        "UPDATE eval_records SET user_rating=? WHERE rowid = (SELECT rowid FROM eval_records WHERE session_id=? ORDER BY timestamp DESC LIMIT 1)",
-        (req.rating, req.session_id)
-    )
-    conn.commit()
-    conn.close()
-    return {"status": "ok"}
+    try:
+        conn.execute(
+            "UPDATE eval_records SET user_rating=? WHERE rowid = (SELECT rowid FROM eval_records WHERE session_id=? ORDER BY timestamp DESC LIMIT 1)",
+            (req.rating, req.session_id)
+        )
+        conn.commit()
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error(f"Rating update failed: {e}")
+        return {"status": "error", "message": str(e)}
+    finally:
+        conn.close()

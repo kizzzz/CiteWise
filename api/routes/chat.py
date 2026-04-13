@@ -37,6 +37,7 @@ async def chat_endpoint(req: ChatRequest):
                 req.message, req.project_id,
                 api_key=req.api_key or None,
                 base_url=req.base_url or None,
+                model=req.model or None,
             ):
                 yield event
 

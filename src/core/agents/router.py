@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 INTENT_MAP = {
     "summarize": ["总结", "提取", "梳理", "对比", "字段", "表格", "结构化"],
-    "generate": ["写", "生成", "撰写", "帮我写", "文章", "论文", "章节"],
+    "generate": ["写", "生成", "撰写", "帮我写", "章节"],
     "framework": ["框架", "思路", "大纲", "怎么写", "结构"],
     "modify": ["修改", "调整", "改写", "重写", "换", "拆分", "合并"],
     "export": ["导出", "下载", "保存", "输出"],
@@ -17,6 +17,9 @@ INTENT_MAP = {
     "figures": ["图表索引", "图片", "figure", "fig", "图表列表"],
     "analyze": ["分析", "洞察", "建议", "推荐", "模式"],
 }
+
+# Intents that should win in ties (higher priority)
+_PRIORITY_INTENTS = {"export", "websearch", "modify"}
 
 
 class RouterAgent(BaseAgent):
@@ -40,6 +43,14 @@ class RouterAgent(BaseAgent):
 
         if not intent_scores:
             return "explore"
+
+        # 规则3: 优先级意图（export/websearch/modify）在平局时优先
+        max_score = max(intent_scores.values())
+        top_intents = [i for i, s in intent_scores.items() if s == max_score]
+        if len(top_intents) > 1:
+            for pi in _PRIORITY_INTENTS:
+                if pi in top_intents:
+                    return pi
 
         best = max(intent_scores, key=intent_scores.get)
 

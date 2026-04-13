@@ -161,6 +161,76 @@
         }
         .dropdown-menu.show { display: block; }
 
+        /* Model selector — upward dropdown */
+        .model-dropdown-wrap {
+            position: relative;
+        }
+        .model-dropdown-btn {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 0.625rem 1rem;
+            background: #4f46e5;
+            color: white;
+            border: none;
+            border-radius: 0.75rem;
+            font-size: 0.75rem;
+            font-weight: 700;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: background 0.2s;
+            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
+        }
+        .model-dropdown-btn:hover {
+            background: #4338ca;
+        }
+        .model-dropdown-btn .chevron {
+            transition: transform 0.2s;
+        }
+        .model-dropdown-btn.open .chevron {
+            transform: rotate(180deg);
+        }
+        .model-dropdown-list {
+            display: none;
+            position: absolute;
+            bottom: 100%;
+            left: 0;
+            min-width: 100%;
+            margin-bottom: 8px;
+            background: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            box-shadow: 0 -10px 25px -5px rgba(0, 0, 0, 0.1);
+            z-index: 50;
+            max-height: 240px;
+            overflow-y: auto;
+            scrollbar-width: thin;
+        }
+        .model-dropdown-list.show {
+            display: block;
+        }
+        .model-dropdown-list .model-option {
+            padding: 10px 14px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: #475569;
+            cursor: pointer;
+            border-bottom: 1px solid #f1f5f9;
+            transition: all 0.15s;
+        }
+        .model-dropdown-list .model-option:last-child {
+            border-bottom: none;
+        }
+        .model-dropdown-list .model-option:hover {
+            background: #eff6ff;
+            color: #1d4ed8;
+        }
+        .model-dropdown-list .model-option.active {
+            background: #eff6ff;
+            color: #1d4ed8;
+            font-weight: 700;
+        }
+
         .gemini-loading {
             background: linear-gradient(90deg, #3b82f6, #8b5cf6, #3b82f6);
             background-size: 200% auto;
@@ -381,16 +451,23 @@
             </div>
 
             <div class="h-24 px-8 flex items-center bg-white border-t border-slate-200 shadow-[0_-4px_12px_rgba(0,0,0,0.02)]">
-                <div class="w-full max-w-5xl mx-auto relative flex items-center">
-                    <div class="absolute left-4 z-10 flex items-center gap-2">
+                <div class="w-full max-w-5xl mx-auto relative flex items-center gap-2">
+                    <div class="shrink-0 flex items-center gap-2">
                         <span class="px-2 py-1 bg-indigo-50 text-indigo-600 rounded-md text-[10px] font-bold border border-indigo-100 uppercase">Multi-Agent</span>
                     </div>
-                    <input id="chatInput" type="text" placeholder="描述您的学术研究任务..." class="w-full bg-slate-100/80 border border-slate-200 rounded-2xl py-4 pl-28 pr-36 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
-                    <div class="absolute right-2 top-1/2 -translate-y-1/2">
-                        <button onclick="handleSendChat()" id="sendBtn" class="bg-indigo-600 text-white px-5 py-2.5 rounded-xl hover:bg-indigo-700 shadow-md transition-all active:scale-95 flex items-center gap-2">
-                            <span class="text-xs font-bold">学术调度</span>
-                            <i data-lucide="zap" class="w-4 h-4"></i>
+                    <input id="chatInput" type="text" placeholder="描述您的学术研究任务..." class="flex-1 bg-slate-100/80 border border-slate-200 rounded-2xl py-4 px-4 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
+                    <button onclick="handleSendChat()" id="sendBtn" class="shrink-0 bg-indigo-600 text-white px-5 py-2.5 rounded-xl hover:bg-indigo-700 shadow-md transition-all active:scale-95 flex items-center gap-2">
+                        <span class="text-xs font-bold">学术调度</span>
+                        <i data-lucide="zap" class="w-4 h-4"></i>
+                    </button>
+                    <div class="model-dropdown-wrap shrink-0">
+                        <button type="button" id="modelDropdownBtn" class="model-dropdown-btn" onclick="toggleModelDropdown(event)">
+                            <i data-lucide="cpu" class="w-3.5 h-3.5"></i>
+                            <span id="modelDropdownLabel">默认模型</span>
+                            <svg class="chevron w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path d="M19 9l-7 7-7-7"/></svg>
                         </button>
+                        <div id="modelDropdownList" class="model-dropdown-list"></div>
+                        <input type="hidden" id="modelSelect" value="">
                     </div>
                 </div>
             </div>

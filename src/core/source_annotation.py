@@ -5,6 +5,29 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _normalize_author(author: str) -> str:
+    """标准化作者名：去'等'/'et al.'，取姓氏部分"""
+    author = author.strip()
+    author = re.sub(r'\s*等\.?\s*$', '', author)
+    author = re.sub(r'\s*et al\.?\s*$', '', author, flags=re.IGNORECASE)
+    parts = author.split()
+    return parts[0].lower() if parts else author.lower()
+
+
+def _cite_matches_rag(cite: str, year_author_pairs: list, rag_citations: set) -> bool:
+    """检查引用是否匹配 RAG 来源（精确 + 模糊）"""
+    if cite in rag_citations:
+        return True
+    # 模糊匹配
+    cite_year_match = re.search(r'(\d{4})', cite)
+    cite_year = cite_year_match.group(1) if cite_year_match else ""
+    cite_author = _normalize_author(re.sub(r',?\s*\d{4}$', '', cite))
+    for ref_year, ref_author in year_author_pairs:
+        if cite_year == ref_year and cite_author == ref_author:
+            return True
+    return False
+
+
 def annotate_sources(content: str, rag_chunks: list[dict], web_results: list[dict]) -> str:
     """程序化标注内容来源：RAG文献 / 网络搜索 / LLM推理
 
@@ -15,12 +38,14 @@ def annotate_sources(content: str, rag_chunks: list[dict], web_results: list[dic
 
     # 1. 构建 RAG 引用匹配集合
     rag_citations = set()
+    year_author_pairs = []
     for c in rag_chunks:
         meta = c.get("metadata", {})
-        authors = meta.get("authors", "")
-        year = meta.get("year", "")
+        authors = meta.get("authors", "") or c.get("authors", "")
+        year = meta.get("year", "") or c.get("year", "")
         if authors and year:
             rag_citations.add(f"{authors}, {year}")
+            year_author_pairs.append((str(year), _normalize_author(authors)))
 
     # 2. 构建网络来源关键词集合
     web_keywords = set()
@@ -56,7 +81,7 @@ def annotate_sources(content: str, rag_chunks: list[dict], web_results: list[dic
         all_cites = en_cites + zh_cites
 
         for cite in all_cites:
-            if cite in rag_citations:
+            if _cite_matches_rag(cite, year_author_pairs, rag_citations):
                 is_rag = True
                 break
 

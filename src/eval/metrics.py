@@ -63,8 +63,8 @@ def record_eval(
     if not _EVAL_DB_PATH:
         return
     import sqlite3
+    conn = sqlite3.connect(_EVAL_DB_PATH)
     try:
-        conn = sqlite3.connect(_EVAL_DB_PATH)
         conn.execute(
             """INSERT INTO eval_records
             (session_id, project_id, intent, task_type, success, response_time_ms,
@@ -77,9 +77,10 @@ def record_eval(
              json.dumps(metadata or {}, ensure_ascii=False))
         )
         conn.commit()
-        conn.close()
     except Exception as e:
         logger.error(f"Eval record failed: {e}")
+    finally:
+        conn.close()
 
 
 def get_metrics_summary(project_id: Optional[str] = None, days: int = 7) -> dict:
@@ -89,47 +90,46 @@ def get_metrics_summary(project_id: Optional[str] = None, days: int = 7) -> dict
     import sqlite3
     conn = sqlite3.connect(_EVAL_DB_PATH)
 
-    params: list = []
-    where = "WHERE timestamp >= datetime('now', '-? days')"
-    params.append(days)
-    if project_id:
-        where += " AND project_id=?"
-        params.append(project_id)
+    try:
+        params: list = []
+        safe_days = max(1, min(365, int(days)))
+        where = f"WHERE timestamp >= datetime('now', '-{safe_days} days')"
+        if project_id:
+            where += " AND project_id=?"
+            params.append(project_id)
 
-    # 1. Task Success Rate
-    total = conn.execute(f"SELECT COUNT(*) FROM eval_records {where}", params).fetchone()[0]
-    success = conn.execute(f"SELECT COUNT(*) FROM eval_records {where} AND success=1", params).fetchone()[0]
-    success_rate = (success / total * 100) if total > 0 else 0
+        total = conn.execute(f"SELECT COUNT(*) FROM eval_records {where}", params).fetchone()[0]
+        success = conn.execute(f"SELECT COUNT(*) FROM eval_records {where} AND success=1", params).fetchone()[0]
+        success_rate = (success / total * 100) if total > 0 else 0
 
-    # 2. Citation Accuracy
-    acc_rows = conn.execute(f"SELECT AVG(citation_accuracy) FROM eval_records {where} AND citation_accuracy > 0", params).fetchone()
-    avg_accuracy = acc_rows[0] if acc_rows and acc_rows[0] else 0
+        acc_rows = conn.execute(f"SELECT AVG(citation_accuracy) FROM eval_records {where} AND citation_accuracy > 0", params).fetchone()
+        avg_accuracy = acc_rows[0] if acc_rows and acc_rows[0] else 0
 
-    # 3. Hallucination Rate
-    halluc = conn.execute(f"SELECT COUNT(*) FROM eval_records {where} AND hallucination_flag=1", params).fetchone()[0]
-    halluc_rate = (halluc / total * 100) if total > 0 else 0
+        halluc = conn.execute(f"SELECT COUNT(*) FROM eval_records {where} AND hallucination_flag=1", params).fetchone()[0]
+        halluc_rate = (halluc / total * 100) if total > 0 else 0
 
-    # 4. Average Response Time
-    avg_time = conn.execute(f"SELECT AVG(response_time_ms) FROM eval_records {where}", params).fetchone()[0] or 0
+        avg_time = conn.execute(f"SELECT AVG(response_time_ms) FROM eval_records {where}", params).fetchone()[0] or 0
 
-    # 5. Average Cost
-    avg_cost = conn.execute(f"SELECT AVG(cost_estimate) FROM eval_records {where}", params).fetchone()[0] or 0
-    total_cost = conn.execute(f"SELECT SUM(cost_estimate) FROM eval_records {where}", params).fetchone()[0] or 0
+        avg_cost = conn.execute(f"SELECT AVG(cost_estimate) FROM eval_records {where}", params).fetchone()[0] or 0
+        total_cost = conn.execute(f"SELECT SUM(cost_estimate) FROM eval_records {where}", params).fetchone()[0] or 0
 
-    conn.close()
-
-    return {
-        "total_tasks": total,
-        "success_count": success,
-        "success_rate": round(success_rate, 1),
-        "avg_accuracy": round(avg_accuracy, 3),
-        "hallucination_count": halluc,
-        "hallucination_rate": round(halluc_rate, 1),
-        "avg_response_time_ms": round(avg_time, 0),
-        "avg_cost": round(avg_cost, 6),
-        "total_cost": round(total_cost, 4),
-        "period_days": days,
-    }
+        return {
+            "total_tasks": total,
+            "success_count": success,
+            "success_rate": round(success_rate, 1),
+            "avg_accuracy": round(avg_accuracy, 3),
+            "hallucination_count": halluc,
+            "hallucination_rate": round(halluc_rate, 1),
+            "avg_response_time_ms": round(avg_time, 0),
+            "avg_cost": round(avg_cost, 6),
+            "total_cost": round(total_cost, 4),
+            "period_days": days,
+        }
+    except Exception as e:
+        logger.error(f"Metrics query failed: {e}")
+        return {}
+    finally:
+        conn.close()
 
 
 def get_daily_trends(project_id: Optional[str] = None, days: int = 30) -> list[dict]:
@@ -138,27 +138,31 @@ def get_daily_trends(project_id: Optional[str] = None, days: int = 30) -> list[d
         return []
     import sqlite3
     conn = sqlite3.connect(_EVAL_DB_PATH)
+    try:
+        params: list = []
+        safe_days = max(1, min(365, int(days)))
+        where = f"WHERE timestamp >= datetime('now', '-{safe_days} days')"
+        if project_id:
+            where += " AND project_id=?"
+            params.append(project_id)
 
-    params: list = []
-    where = "WHERE timestamp >= datetime('now', '-? days')"
-    params.append(days)
-    if project_id:
-        where += " AND project_id=?"
-        params.append(project_id)
+        rows = conn.execute(f"""
+            SELECT DATE(timestamp) as day,
+                   COUNT(*) as total,
+                   SUM(CASE WHEN success=1 THEN 1 ELSE 0 END) as successes,
+                   AVG(response_time_ms) as avg_time,
+                   AVG(cost_estimate) as avg_cost
+            FROM eval_records {where}
+            GROUP BY DATE(timestamp)
+            ORDER BY day
+        """, params).fetchall()
 
-    rows = conn.execute(f"""
-        SELECT DATE(timestamp) as day,
-               COUNT(*) as total,
-               SUM(CASE WHEN success=1 THEN 1 ELSE 0 END) as successes,
-               AVG(response_time_ms) as avg_time,
-               AVG(cost_estimate) as avg_cost
-        FROM eval_records {where}
-        GROUP BY DATE(timestamp)
-        ORDER BY day
-    """, params).fetchall()
-    conn.close()
-
-    return [{"date": r[0], "total": r[1], "successes": r[2], "avg_time": r[3], "avg_cost": r[4]} for r in rows]
+        return [{"date": r[0], "total": r[1], "successes": r[2], "avg_time": r[3], "avg_cost": r[4]} for r in rows]
+    except Exception as e:
+        logger.error(f"Daily trends query failed: {e}")
+        return []
+    finally:
+        conn.close()
 
 
 def generate_optimization_suggestions(metrics: dict) -> list[str]:

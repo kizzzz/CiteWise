@@ -3,11 +3,24 @@
 支持同步 + 异步 + 流式调用。
 """
 import json
+import os
 import re
 import logging
 from typing import AsyncGenerator, Optional
 from openai import OpenAI
 from config.settings import OPENAI_API_KEY, OPENAI_BASE_URL, LLM_MODEL
+
+# 确保 stdout/stderr 使用 UTF-8（Windows 兼容）
+if os.name == 'nt':
+    os.environ.setdefault('PYTHONIOENCODING', 'utf-8')
+    try:
+        import sys
+        if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        if sys.stderr and hasattr(sys.stderr, 'reconfigure'):
+            sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
 
 logger = logging.getLogger(__name__)
 
@@ -108,12 +121,13 @@ class LLMClient:
 
     async def achat_stream(self, messages: list[dict], temperature: float = 0.7,
                            max_tokens: int = 4000, api_key: Optional[str] = None,
-                           base_url: Optional[str] = None) -> AsyncGenerator[str, None]:
+                           base_url: Optional[str] = None, model: Optional[str] = None) -> AsyncGenerator[str, None]:
         """异步流式对话 — 逐 token yield"""
         client = self.get_async_client(api_key, base_url)
+        use_model = model or self.model
         try:
             stream = await client.chat.completions.create(
-                model=self.model,
+                model=use_model,
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,

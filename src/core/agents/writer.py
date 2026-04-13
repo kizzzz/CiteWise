@@ -101,7 +101,7 @@ class WriterAgent(BaseAgent):
 
         task_prompt = prompt_engine.build_rewrite_prompt(
             instruction=instruction,
-            target_paragraph=target_content[:1500],
+            target_paragraph=target_content[:4000],
             full_article="",
             reference_material=reference,
         )

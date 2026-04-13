@@ -7,6 +7,7 @@ class ChatRequest(BaseModel):
     project_id: str = Field(..., min_length=1, description="项目ID")
     api_key: str = Field("", description="用户自带 API Key（可选）")
     base_url: str = Field("", description="用户自定义 Base URL（可选）")
+    model: str = Field("", description="模型名称（可选）")
 
 
 class SubChatRequest(BaseModel):

@@ -29,15 +29,19 @@ class EmbeddingManager:
         """批量生成 embedding"""
         if not texts:
             return []
-        try:
-            resp = self.client.embeddings.create(
-                model=self.model,
-                input=texts,
-            )
-            return [item.embedding for item in resp.data]
-        except Exception as e:
-            logger.error(f"Embedding 生成失败: {e}")
-            return []
+        import time
+        for attempt in range(3):
+            try:
+                resp = self.client.embeddings.create(
+                    model=self.model,
+                    input=texts,
+                )
+                return [item.embedding for item in resp.data]
+            except Exception as e:
+                logger.error(f"Embedding 生成失败 (attempt {attempt+1}/3): {e}")
+                if attempt < 2:
+                    time.sleep(1 * (attempt + 1))
+        return []
 
 
 class VectorStore:
