@@ -11,6 +11,8 @@ class AgentState(TypedDict, total=False):
     # === 输入 ===
     user_input: str
     project_id: str
+    session_id: str                # 对话会话 ID（多轮对话）
+    messages: list                 # 对话历史 [{role, content}]（最近 10 轮）
 
     # === 路由 ===
     intent: str             # explore / summarize / generate / modify / framework / export / chart / websearch / analyze
@@ -38,3 +40,4 @@ class AgentState(TypedDict, total=False):
     # === 额外参数 ===
     target_content: str     # modify 时的原文
     framework: list         # 章节框架
+    gen_params: dict        # 生成参数 {style, target_length, citation_density}

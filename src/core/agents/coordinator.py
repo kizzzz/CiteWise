@@ -34,6 +34,10 @@ class CoordinatorAgent(BaseAgent):
             input_state["intent"] = intent_override
         if kwargs.get("target_content"):
             input_state["target_content"] = kwargs["target_content"]
+        if kwargs.get("section_name"):
+            input_state["section_name"] = kwargs["section_name"]
+        if kwargs.get("gen_params"):
+            input_state["gen_params"] = kwargs["gen_params"]
 
         config = {"configurable": {"thread_id": project_id or "default"}}
         result = graph.invoke(input_state, config)

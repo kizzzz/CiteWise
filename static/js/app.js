@@ -15,6 +15,8 @@ let currentDraftId = null;
 let currentDraftName = '';
 let currentUser = null; // { id, username, token }
 let authMode = 'login'; // 'login' or 'register'
+let currentSessionId = null; // 对话会话 ID（多轮对话）
+let researchMaterials = []; // 写作素材收集（按项目存储）
 
 let agents = [
     { id: 'research', name: 'Research', icon: 'search', status: 'READY', color: 'blue',
@@ -36,8 +38,8 @@ let skills = [
 ];
 
 let tools = [
-    { id: 1, title: "Statistical Plotter", desc: "自动根据文献数据绘制图表。", icon: "bar-chart-3", type: "脚本", trigger: "绘图, 画图, plot" },
-    { id: 2, title: "Citation Formatter", desc: "处理引用格式。", icon: "book-open", type: "脚本", trigger: "格式, 引用, cite" }
+    { id: 1, title: "Statistical Plotter", desc: "自动根据文献数据绘制图表。", icon: "bar-chart-3", type: "脚本", trigger: "绘图, 画图, plot", agent: "analyst" },
+    { id: 2, title: "Citation Formatter", desc: "处理引用格式。", icon: "book-open", type: "脚本", trigger: "格式, 引用, cite", agent: "research" }
 ];
 
 let apiKeys = [
@@ -64,7 +66,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         } catch { currentUser = null; }
     }
 
-    // Restore API keys (new multi-provider format)
+    // Restore last session ID
+    const savedSession = localStorage.getItem('citewise_session');
+    if (savedSession) {
+        try { currentSessionId = JSON.parse(savedSession); } catch { currentSessionId = null; }
+    }
+
+    // Restore agent/skill/tool config from localStorage
+    loadAgentConfig();
     const savedKeys = localStorage.getItem('citewise_api_keys');
     if (savedKeys) {
         try { apiKeys = JSON.parse(savedKeys); } catch { apiKeys = []; }
@@ -144,6 +153,7 @@ async function selectProject(id) {
     document.getElementById('currentProjectName').textContent = proj ? proj.name : '未知项目';
     closeAllDropdowns();
     renderProjectList();
+    loadMaterialsFromStorage();
     await loadProjectData();
 }
 
@@ -153,6 +163,10 @@ async function loadProjectData() {
         const state = await (await api('GET', `/projects/${currentProjectId}/state`)).json();
         renderPapers(state.papers || []);
         renderDrafts(state.sections_with_id || []);
+        // Restore session history if we have a saved session
+        if (currentSessionId) {
+            await loadSessionHistory();
+        }
     } catch (e) {
         console.error('Load project data failed:', e);
     }
@@ -372,13 +386,19 @@ function renderDrafts(sections) {
 async function confirmCreateDraft() {
     const name = document.getElementById('newDraftTitle').value.trim();
     if (!name || !currentProjectId) return;
+    const style = document.getElementById('draftStyle')?.value || '学术正式';
+    const length = parseInt(document.getElementById('draftLength')?.value || '1000');
+    const citation = document.getElementById('draftCitation')?.value || '正常';
     toggleModal('newDraftModal');
     showToast('正在生成章节...', 'success');
 
     try {
         const result = await (await api('POST', '/sections', {
             project_id: currentProjectId,
-            name: name
+            name: name,
+            style: style,
+            target_length: length,
+            citation_density: citation,
         })).json();
         showToast('章节生成完成', 'success');
         await loadProjectData();
@@ -504,6 +524,9 @@ async function handleSendChat() {
         const activeKey = getActiveApiKey();
         const selectedModel = document.getElementById('modelSelect')?.value || '';
         const chatBody = { message: text, project_id: currentProjectId };
+        if (currentSessionId) {
+            chatBody.session_id = currentSessionId;
+        }
         if (activeKey) {
             chatBody.api_key = activeKey.apiKey;
             chatBody.base_url = activeKey.baseUrl;
@@ -567,6 +590,43 @@ async function handleSendChat() {
                     if (eventType === 'agent_end' && data.agent) {
                         updateTimelineStep(collabId + '-timeline', data.agent, 'done', data.detail, data.duration_ms);
                         updateAgentStatus(data.agent, 'READY');
+                    }
+
+                    // Session event: save session_id for multi-turn
+                    if (eventType === 'session' && data.session_id) {
+                        currentSessionId = data.session_id;
+                        localStorage.setItem('citewise_session', JSON.stringify(currentSessionId));
+                    }
+
+                    // CoVe verification result
+                    if (eventType === 'verification') {
+                        const collabParent = document.getElementById(collabId + '-res')?.parentElement?.parentElement;
+                        if (collabParent) {
+                            const score = data.overall_score || 0;
+                            const scoreClass = score > 0.8 ? 'high' : (score > 0.5 ? 'medium' : 'low');
+                            const flaggedCount = data.flagged_count || 0;
+                            const claimCount = data.claim_count || 0;
+                            let flaggedHtml = '';
+                            if (data.flagged_claims && data.flagged_claims.length > 0) {
+                                flaggedHtml = data.flagged_claims.map(f =>
+                                    `<div class="cove-flagged-item"><strong>${escapeHtml(f.status)}</strong>: ${escapeHtml(f.claim)}${f.issue ? '<br><span class="text-slate-500">' + escapeHtml(f.issue) + '</span>' : ''}</div>`
+                                ).join('');
+                            }
+                            const coveCard = document.createElement('div');
+                            coveCard.className = 'cove-card';
+                            coveCard.innerHTML = `
+                                <div class="flex items-center gap-3 mb-2">
+                                    <span class="cove-score ${scoreClass}">${(score * 100).toFixed(0)}%</span>
+                                    <div>
+                                        <div class="font-bold text-slate-700">事实性验证</div>
+                                        <div class="text-slate-400">${claimCount} 个声明${flaggedCount > 0 ? '，<span class="text-red-500">' + flaggedCount + ' 个存疑</span>' : '，全部可信'}</div>
+                                    </div>
+                                </div>
+                                ${flaggedHtml ? '<details><summary class="cursor-pointer text-xs text-slate-500 font-bold">查看详情</summary>' + flaggedHtml + '</details>' : ''}
+                            `;
+                            collabParent.appendChild(coveCard);
+                            scrollChat();
+                        }
                     }
 
                     // Token-level streaming: append tokens in real-time
@@ -722,6 +782,762 @@ function appendUserMessage(text) {
     c.appendChild(d);
     lucide.createIcons();
     scrollChat();
+}
+
+// ---- Tab switching for combined views ----
+function switchExtensionTab(tabId) {
+    document.getElementById('skillTab').classList.toggle('hidden', tabId !== 'skillTab');
+    document.getElementById('toolTab').classList.toggle('hidden', tabId !== 'toolTab');
+    document.getElementById('extSkillTabBtn').classList.toggle('active', tabId === 'skillTab');
+    document.getElementById('extToolTabBtn').classList.toggle('active', tabId === 'toolTab');
+    document.getElementById('extSkillAction').classList.toggle('hidden', tabId !== 'skillTab');
+    document.getElementById('extToolAction').classList.toggle('hidden', tabId !== 'toolTab');
+    // Render content
+    if (tabId === 'skillTab') {
+        const c = document.getElementById('extensionSkillList');
+        if (c) renderSkillListInto(c);
+    } else {
+        const c = document.getElementById('extensionToolList');
+        if (c) renderToolListInto(c);
+    }
+    lucide.createIcons();
+}
+
+function switchAgentHubTab(tabId) {
+    document.getElementById('agentConfigTab').classList.toggle('hidden', tabId !== 'agentConfigTab');
+    document.getElementById('agentEvalTab').classList.toggle('hidden', tabId !== 'agentEvalTab');
+    document.getElementById('ahConfigTabBtn').classList.toggle('active', tabId === 'agentConfigTab');
+    document.getElementById('ahEvalTabBtn').classList.toggle('active', tabId !== 'agentConfigTab');
+    document.getElementById('ahConfigAction').classList.toggle('hidden', tabId !== 'agentConfigTab');
+    if (tabId === 'agentConfigTab') {
+        const c = document.getElementById('hubAgentList');
+        if (c) renderAgentCardsInto(c);
+    } else {
+        loadEvalDashboardInto('hubEvalContent');
+    }
+    lucide.createIcons();
+}
+
+function renderSkillListInto(container) {
+    if (!container) return;
+    container.innerHTML = skills.map(s =>
+        `<div onclick="openSkillDetail(${s.id})" class="interactive-card bg-white p-6 rounded-3xl border border-slate-100 shadow-sm group animate__animated animate__fadeIn cursor-pointer">
+            <div class="flex justify-between items-start mb-4">
+                <div class="p-2 bg-amber-50 text-amber-600 rounded-lg"><i data-lucide="${s.icon}" class="w-5 h-5"></i></div>
+                <span class="text-[7px] uppercase font-bold text-blue-500 mt-2">On ${escapeHtml(s.agent)} Agent</span>
+            </div>
+            <h4 class="font-bold text-slate-800 text-sm mb-1">${escapeHtml(s.title)}</h4>
+            <p class="text-[10px] text-slate-500">${escapeHtml(s.desc)}</p>
+        </div>`
+    ).join('');
+}
+
+function renderToolListInto(container) {
+    if (!container) return;
+    container.innerHTML = tools.map(t =>
+        `<div onclick="openToolDetail(${t.id})" class="interactive-card bg-white p-6 rounded-3xl border border-slate-100 shadow-sm group animate__animated animate__fadeIn cursor-pointer">
+            <div class="flex justify-between mb-4">
+                <div class="p-2 bg-blue-50 text-blue-600 rounded-lg"><i data-lucide="${t.icon}" class="w-5 h-5"></i></div>
+                <span class="px-2 py-1 bg-slate-50 text-slate-400 text-[8px] font-bold rounded">Fixed</span>
+            </div>
+            <h4 class="font-bold text-slate-800 text-sm mb-1">${escapeHtml(t.title)}</h4>
+            <p class="text-[10px] text-slate-500">${escapeHtml(t.desc)}</p>
+            <div class="mt-4 pt-3 border-t border-slate-50 text-[8px] text-slate-400 font-bold uppercase">指令词: ${escapeHtml(t.trigger)}</div>
+        </div>`
+    ).join('');
+}
+
+function renderAgentCardsInto(container) {
+    if (!container) return;
+    container.innerHTML = agents.map(a => {
+        const assignedSkills = skills.filter(s => s.agent === a.id);
+        return `<div onclick="openAgentDetail('${a.id}')" class="interactive-card bg-white p-6 rounded-3xl border border-slate-100 shadow-sm cursor-pointer hover:border-indigo-200 transition-all">
+            <div class="flex justify-between items-start mb-4">
+                <div class="p-3 bg-${a.color}-50 text-${a.color}-600 rounded-xl"><i data-lucide="${a.icon}" class="w-6 h-6"></i></div>
+                <span class="text-[8px] font-bold uppercase px-2 py-1 rounded ${a.status === 'RUNNING' ? 'bg-amber-50 text-amber-600' : 'bg-green-50 text-green-600'}">${a.status}</span>
+            </div>
+            <h4 class="font-bold text-slate-800 text-base mb-1">${escapeHtml(a.name)}</h4>
+            <p class="text-xs text-slate-500 mb-3">${escapeHtml(a.description || '自定义 Agent')}</p>
+            <div class="flex items-center gap-2 text-[10px] text-slate-400"><i data-lucide="zap" class="w-3 h-3"></i><span>${assignedSkills.length} 个 Skill</span></div>
+        </div>`;
+    }).join('');
+}
+
+async function loadEvalDashboardInto(containerId) {
+    const container = document.getElementById(containerId);
+    if (!container || !currentProjectId) return;
+    container.innerHTML = '<div class="text-center text-slate-400 py-12">加载中...</div>';
+    try {
+        const days = 7;
+        const [metrics, trends] = await Promise.all([
+            (await api('GET', `/eval/metrics?days=${days}&project_id=${currentProjectId}`)).json(),
+            (await api('GET', `/eval/trends?days=${days}&project_id=${currentProjectId}`)).json(),
+        ]);
+        container.innerHTML = `
+            <div class="grid grid-cols-5 gap-4">
+                <div class="bg-white border border-slate-200 rounded-2xl p-5 text-center">
+                    <div class="text-2xl font-bold ${metrics.success_rate >= 85 ? 'text-emerald-600' : 'text-red-600'}">${metrics.success_rate}%</div>
+                    <div class="text-[10px] text-slate-400 font-bold mt-1">任务成功率</div>
+                </div>
+                <div class="bg-white border border-slate-200 rounded-2xl p-5 text-center">
+                    <div class="text-2xl font-bold text-blue-600">${Math.round(metrics.avg_response_time_ms)}ms</div>
+                    <div class="text-[10px] text-slate-400 font-bold mt-1">平均响应</div>
+                </div>
+                <div class="bg-white border border-slate-200 rounded-2xl p-5 text-center">
+                    <div class="text-2xl font-bold ${metrics.hallucination_rate <= 10 ? 'text-emerald-600' : 'text-red-600'}">${metrics.hallucination_rate}%</div>
+                    <div class="text-[10px] text-slate-400 font-bold mt-1">幻觉率</div>
+                </div>
+                <div class="bg-white border border-slate-200 rounded-2xl p-5 text-center">
+                    <div class="text-2xl font-bold text-purple-600">${metrics.success_count || 0}</div>
+                    <div class="text-[10px] text-slate-400 font-bold mt-1">成功任务</div>
+                </div>
+                <div class="bg-white border border-slate-200 rounded-2xl p-5 text-center">
+                    <div class="text-2xl font-bold text-slate-700">${metrics.total_tasks || 0}</div>
+                    <div class="text-[10px] text-slate-400 font-bold mt-1">总任务数</div>
+                </div>
+            </div>
+            <div id="hubEvalSuggestions" class="space-y-2"></div>`;
+        lucide.createIcons();
+    } catch (e) {
+        container.innerHTML = '<div class="text-center text-slate-400 py-12">加载评估数据失败</div>';
+    }
+}
+
+// ---- Material Collection (Reading → Writing Bridge) ----
+function addCurrentPaperToMaterials() {
+    const title = document.getElementById('detailPaperDisplayTitle')?.textContent || '';
+    const content = document.getElementById('paperDetailContent')?.innerText || '';
+    if (!content.trim()) {
+        showToast('暂无可添加的内容', 'error');
+        return;
+    }
+    addToMaterials('paper', content, title);
+}
+
+function addChatResponseToMaterials(responseElement) {
+    const content = responseElement?.innerText || responseElement?.textContent || '';
+    if (!content.trim()) return;
+    addToMaterials('chat', content, '');
+}
+
+// ---- Knowledge Map (D3.js Force-directed Graph) ----
+async function loadKnowledgeMap() {
+    if (!currentProjectId) return;
+    const loading = document.getElementById('knowledgeMapLoading');
+    const svg = document.getElementById('knowledgeMapSvg');
+    if (!svg || !loading) return;
+
+    loading.textContent = '加载中...';
+    loading.classList.remove('hidden');
+
+    try {
+        const data = await (await api('GET', `/knowledge-map?project_id=${currentProjectId}`)).json();
+        if (!data.nodes || data.nodes.length === 0) {
+            loading.textContent = '暂无文献，请先上传 PDF';
+            return;
+        }
+        loading.classList.add('hidden');
+        renderKnowledgeMap(data);
+    } catch (e) {
+        loading.textContent = '加载失败: ' + e.message;
+    }
+}
+
+function renderKnowledgeMap(data) {
+    const svg = d3.select('#knowledgeMapSvg');
+    svg.selectAll('*').remove();
+
+    const container = document.getElementById('knowledgeMapContainer');
+    const width = container.clientWidth;
+    const height = container.clientHeight;
+
+    svg.attr('viewBox', [0, 0, width, height]);
+
+    // Color scale by year
+    const years = data.nodes.map(n => parseInt(n.year) || 2020);
+    const minYear = Math.min(...years);
+    const maxYear = Math.max(...years);
+    const colorScale = d3.scaleSequential(d3.interpolateBlues)
+        .domain([minYear - 2, maxYear + 2]);
+
+    // Size scale by chunk count
+    const maxChunks = Math.max(...data.nodes.map(n => n.chunk_count || 1), 1);
+    const sizeScale = d3.scaleSqrt().domain([0, maxChunks]).range([15, 40]);
+
+    // Build links
+    const nodeMap = {};
+    data.nodes.forEach(n => nodeMap[n.id] = n);
+    const links = (data.edges || []).filter(e => nodeMap[e.source] && nodeMap[e.target]);
+
+    // Simulation
+    const simulation = d3.forceSimulation(data.nodes)
+        .force('link', d3.forceLink(links).id(d => d.id).distance(120))
+        .force('charge', d3.forceManyBody().strength(-300))
+        .force('center', d3.forceCenter(width / 2, height / 2))
+        .force('collision', d3.forceCollide().radius(d => sizeScale(d.chunk_count || 1) + 5));
+
+    // Links
+    const link = svg.append('g')
+        .selectAll('line')
+        .data(links)
+        .join('line')
+        .attr('stroke', d => d.type === 'citation' ? '#f59e0b' : '#3b82f6')
+        .attr('stroke-width', d => d.type === 'citation' ? 2 : Math.max(1, d.weight * 3))
+        .attr('stroke-dasharray', d => d.type === 'citation' ? '5,5' : 'none')
+        .attr('stroke-opacity', 0.6);
+
+    // Nodes
+    const node = svg.append('g')
+        .selectAll('g')
+        .data(data.nodes)
+        .join('g')
+        .attr('cursor', 'pointer')
+        .call(d3.drag()
+            .on('start', (event, d) => { if (!event.active) simulation.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+            .on('drag', (event, d) => { d.fx = event.x; d.fy = event.y; })
+            .on('end', (event, d) => { if (!event.active) simulation.alphaTarget(0); d.fx = null; d.fy = null; })
+        );
+
+    node.append('circle')
+        .attr('r', d => sizeScale(d.chunk_count || 1))
+        .attr('fill', d => colorScale(parseInt(d.year) || 2020))
+        .attr('stroke', '#fff')
+        .attr('stroke-width', 2)
+        .on('click', (event, d) => openPaperDetail(d.id, d.title, d.authors));
+
+    node.append('text')
+        .text(d => (d.title || 'Untitled').substring(0, 15) + (d.title && d.title.length > 15 ? '...' : ''))
+        .attr('dy', d => sizeScale(d.chunk_count || 1) + 14)
+        .attr('text-anchor', 'middle')
+        .attr('font-size', '10px')
+        .attr('fill', '#64748b')
+        .attr('font-weight', '600');
+
+    // Title tooltip on hover
+    node.append('title')
+        .text(d => `${d.title}\n作者: ${d.authors}\n年份: ${d.year}\nChunks: ${d.chunk_count}`);
+
+    simulation.on('tick', () => {
+        link
+            .attr('x1', d => d.source.x)
+            .attr('y1', d => d.source.y)
+            .attr('x2', d => d.target.x)
+            .attr('y2', d => d.target.y);
+        node.attr('transform', d => `translate(${d.x},${d.y})`);
+    });
+}
+function addToMaterials(source, content, paperTitle) {
+    if (!content || !content.trim()) return;
+    const material = {
+        id: Date.now(),
+        source: source, // 'paper' or 'chat'
+        content: content.substring(0, 500),
+        paperTitle: paperTitle || '',
+        project_id: currentProjectId,
+        addedAt: new Date().toLocaleString(),
+    };
+    researchMaterials.push(material);
+    saveMaterialsToStorage();
+    showToast('已添加到写作素材', 'success');
+}
+
+function removeFromMaterials(id) {
+    researchMaterials = researchMaterials.filter(m => m.id !== id);
+    saveMaterialsToStorage();
+    renderMaterialsPanel();
+}
+
+function insertMaterialToEditor(id) {
+    const material = researchMaterials.find(m => m.id === id);
+    if (!material) return;
+    const editor = document.getElementById('editableArea');
+    if (editor) {
+        const current = editor.innerText;
+        editor.innerText = current + '\n\n' + material.content;
+        // Save back
+        if (currentDraftId) {
+            api('PUT', `/sections/${currentDraftId}`, { content: editor.innerText });
+        }
+        showToast('素材已插入到章节', 'success');
+    }
+}
+
+function saveMaterialsToStorage() {
+    const key = `citewise_materials_${currentProjectId || 'default'}`;
+    localStorage.setItem(key, JSON.stringify(researchMaterials));
+}
+
+function loadMaterialsFromStorage() {
+    const key = `citewise_materials_${currentProjectId || 'default'}`;
+    const saved = localStorage.getItem(key);
+    if (saved) {
+        try { researchMaterials = JSON.parse(saved); } catch { researchMaterials = []; }
+    } else {
+        researchMaterials = [];
+    }
+}
+
+function renderMaterialsPanel() {
+    const panel = document.getElementById('materialsPanel');
+    if (!panel) return;
+    // Update count
+    const countEl = document.getElementById('materialCount');
+    if (countEl) countEl.textContent = researchMaterials.length;
+    if (researchMaterials.length === 0) {
+        panel.innerHTML = '<div class="text-center text-slate-400 py-8 text-xs">暂无素材，从文献详情或聊天中添加</div>';
+        return;
+    }
+    panel.innerHTML = researchMaterials.map(m => `
+        <div class="p-3 bg-white border border-slate-100 rounded-xl space-y-2 animate__animated animate__fadeIn">
+            <div class="flex items-center justify-between">
+                <span class="text-[9px] font-bold ${m.source === 'paper' ? 'text-blue-500' : 'text-indigo-500'} uppercase">${m.source === 'paper' ? '来自文献' : '来自对话'}</span>
+                <button onclick="removeFromMaterials(${m.id})" class="text-slate-300 hover:text-red-500"><i data-lucide="x" class="w-3 h-3"></i></button>
+            </div>
+            <p class="text-xs text-slate-600 leading-relaxed">${escapeHtml(m.content.substring(0, 100))}${m.content.length > 100 ? '...' : ''}</p>
+            ${m.paperTitle ? `<p class="text-[9px] text-slate-400">来源: ${escapeHtml(m.paperTitle)}</p>` : ''}
+            <button onclick="insertMaterialToEditor(${m.id})" class="w-full py-1.5 bg-indigo-50 text-indigo-600 rounded-lg text-[10px] font-bold hover:bg-indigo-100 transition-all">插入到章节</button>
+        </div>
+    `).join('');
+    lucide.createIcons();
+}
+
+function toggleMaterialsPanel() {
+    const panel = document.getElementById('materialsPanel');
+    const toggle = document.getElementById('materialsToggle');
+    if (!panel || !toggle) return;
+    panel.classList.toggle('hidden');
+    toggle.classList.toggle('active');
+    if (!panel.classList.contains('hidden')) {
+        renderMaterialsPanel();
+    }
+}
+
+// ---- Literature Recommendations ----
+async function loadRecommendations() {
+    const loading = document.getElementById('recommendLoading');
+    const empty = document.getElementById('recommendEmpty');
+    const error = document.getElementById('recommendError');
+    const grid = document.getElementById('recommendGrid');
+    if (!loading || !grid) return;
+
+    if (!currentProjectId) {
+        empty.classList.remove('hidden');
+        loading.classList.add('hidden');
+        error.classList.add('hidden');
+        grid.classList.add('hidden');
+        return;
+    }
+
+    loading.classList.remove('hidden');
+    empty.classList.add('hidden');
+    error.classList.add('hidden');
+    grid.classList.add('hidden');
+
+    try {
+        const resp = await api('GET', `/recommendations?project_id=${currentProjectId}&top_k=5`);
+        const data = await resp.json();
+        loading.classList.add('hidden');
+
+        if (!data.recommendations || data.recommendations.length === 0) {
+            empty.classList.remove('hidden');
+            return;
+        }
+
+        renderRecommendations(data.recommendations);
+    } catch (e) {
+        loading.classList.add('hidden');
+        error.classList.remove('hidden');
+        document.getElementById('recommendErrorMsg').textContent = '加载失败: ' + e.message;
+    }
+}
+
+function renderRecommendations(recs) {
+    const grid = document.getElementById('recommendGrid');
+    const empty = document.getElementById('recommendEmpty');
+    if (!grid) return;
+
+    empty.classList.add('hidden');
+    grid.classList.remove('hidden');
+    grid.innerHTML = '';
+
+    recs.forEach(rec => {
+        const scorePercent = Math.round(rec.similarity_score * 100);
+        const scoreColor = scorePercent >= 70 ? 'text-emerald-600 bg-emerald-50' :
+                           scorePercent >= 40 ? 'text-amber-600 bg-amber-50' :
+                           'text-slate-500 bg-slate-50';
+
+        const card = document.createElement('div');
+        card.className = 'interactive-card bg-white border border-slate-100 rounded-2xl shadow-sm hover:shadow-md transition-all p-5 space-y-3 cursor-default';
+        card.innerHTML = `
+            <div class="flex items-start justify-between gap-2">
+                <h4 class="font-bold text-slate-800 text-sm leading-snug line-clamp-2 flex-1">${escapeHtml(rec.recommended_paper_title || '未知标题')}</h4>
+                <span class="shrink-0 text-[10px] font-bold px-2 py-1 rounded-lg ${scoreColor}">${scorePercent}%</span>
+            </div>
+            <div class="flex items-center gap-2 text-[11px] text-slate-400">
+                ${rec.recommended_paper_authors ? `<span class="truncate">${escapeHtml(rec.recommended_paper_authors)}</span>` : ''}
+                ${rec.recommended_paper_year ? `<span>· ${escapeHtml(String(rec.recommended_paper_year))}</span>` : ''}
+            </div>
+            <p class="text-[11px] text-slate-500 leading-relaxed">${escapeHtml(rec.recommendation_reason || '')}</p>
+            <div class="pt-1 border-t border-slate-50">
+                <span class="text-[10px] text-slate-300">源自: ${escapeHtml(truncate(rec.source_paper_title, 30))}</span>
+            </div>
+        `;
+        grid.appendChild(card);
+    });
+}
+
+function truncate(str, len) {
+    if (!str) return '';
+    return str.length > len ? str.slice(0, len) + '...' : str;
+}
+
+// ============ Submit Functions (Journal Recommendation + Format Check) ============
+
+let currentFormatChecklist = [];
+
+function switchSubmitTab(tabId) {
+    const journalTab = document.getElementById('journalTab');
+    const formatTab = document.getElementById('formatTab');
+    const journalBtn = document.getElementById('submitJournalTabBtn');
+    const formatBtn = document.getElementById('submitFormatTabBtn');
+
+    if (tabId === 'journalTab') {
+        journalTab.classList.remove('hidden');
+        formatTab.classList.add('hidden');
+        journalBtn.classList.add('active');
+        formatBtn.classList.remove('active');
+    } else {
+        journalTab.classList.add('hidden');
+        formatTab.classList.remove('hidden');
+        journalBtn.classList.add('active');
+        formatBtn.classList.add('active');
+        journalBtn.classList.remove('active');
+    }
+    lucide.createIcons();
+}
+
+async function loadJournalRecommendations() {
+    if (!currentProjectId) {
+        showToast('请先选择项目', 'error');
+        return;
+    }
+
+    const loading = document.getElementById('journalLoading');
+    const empty = document.getElementById('journalEmpty');
+    const grid = document.getElementById('journalGrid');
+    const error = document.getElementById('journalError');
+    const action = document.getElementById('journalAction');
+
+    loading.classList.remove('hidden');
+    empty.classList.add('hidden');
+    grid.classList.add('hidden');
+    error.classList.add('hidden');
+    action.classList.add('hidden');
+
+    try {
+        const data = await api('POST', '/submit/recommend', {
+            project_id: currentProjectId
+        });
+
+        loading.classList.add('hidden');
+
+        if (data.journals && data.journals.length > 0) {
+            renderJournalCards(data.journals);
+            action.classList.remove('hidden');
+        } else {
+            empty.classList.remove('hidden');
+            empty.querySelector('p').textContent = data.error || '未找到匹配期刊，请先上传文献并生成章节';
+        }
+    } catch (e) {
+        loading.classList.add('hidden');
+        error.classList.remove('hidden');
+        document.getElementById('journalErrorMsg').textContent = e.message || '请求失败';
+    }
+}
+
+function renderJournalCards(journals) {
+    const grid = document.getElementById('journalGrid');
+    grid.classList.remove('hidden');
+    grid.innerHTML = '';
+
+    const levelColors = {
+        'SCI-Q1': 'bg-emerald-100 text-emerald-700',
+        'SCI-Q2': 'bg-blue-100 text-blue-700',
+        'SCI-Q3': 'bg-cyan-100 text-cyan-700',
+        'SCI-Q4': 'bg-teal-100 text-teal-700',
+        'SCI': 'bg-indigo-100 text-indigo-700',
+        'EI': 'bg-amber-100 text-amber-700',
+        'CSSCI': 'bg-purple-100 text-purple-700',
+        '北大核心': 'bg-rose-100 text-rose-700',
+        'CSCD': 'bg-sky-100 text-sky-700',
+    };
+
+    journals.forEach((j, idx) => {
+        const score = j.match_score || 0;
+        const scoreColor = score >= 80 ? 'bg-emerald-500' : score >= 60 ? 'bg-blue-500' : score >= 40 ? 'bg-amber-500' : 'bg-slate-400';
+        const levelBadge = levelColors[j.level] || 'bg-slate-100 text-slate-600';
+
+        const card = document.createElement('div');
+        card.className = 'interactive-card bg-white border border-slate-100 rounded-2xl shadow-sm hover:shadow-md transition-all p-5 space-y-3 cursor-default';
+        card.innerHTML = `
+            <div class="flex items-start justify-between gap-2">
+                <h4 class="font-bold text-slate-800 text-sm leading-snug line-clamp-2 flex-1">${escapeHtml(j.name || '未知期刊')}</h4>
+                <span class="shrink-0 text-[10px] font-bold px-2 py-1 rounded-lg ${levelBadge}">${escapeHtml(j.level || '未知')}</span>
+            </div>
+            ${j.publisher ? `<p class="text-[11px] text-slate-400">${escapeHtml(j.publisher)}</p>` : ''}
+            <div class="flex items-center gap-3">
+                <div class="flex-1 bg-slate-100 rounded-full h-1.5">
+                    <div class="${scoreColor} h-1.5 rounded-full transition-all" style="width: ${score}%"></div>
+                </div>
+                <span class="text-[10px] font-bold text-slate-500">${score}%</span>
+            </div>
+            <p class="text-[11px] text-slate-500 leading-relaxed">${escapeHtml(j.match_reason || '')}</p>
+            <div class="flex items-center gap-3 text-[10px] text-slate-400 pt-1 border-t border-slate-50">
+                ${j.impact_factor && j.impact_factor !== 'N/A' ? `<span>IF: ${escapeHtml(String(j.impact_factor))}</span>` : ''}
+                ${j.review_cycle && j.review_cycle !== 'N/A' ? `<span>周期: ${escapeHtml(j.review_cycle)}</span>` : ''}
+                ${j.acceptance_rate && j.acceptance_rate !== 'N/A' ? `<span>录用率: ${escapeHtml(String(j.acceptance_rate))}</span>` : ''}
+            </div>
+            ${j.submission_url && j.submission_url !== 'N/A' ? `
+            <a href="${escapeHtml(j.submission_url)}" target="_blank" class="inline-flex items-center gap-1 text-[10px] font-bold text-indigo-600 hover:underline mt-1">
+                <i data-lucide="external-link" class="w-3 h-3"></i> 投稿系统
+            </a>` : ''}
+        `;
+        grid.appendChild(card);
+    });
+    lucide.createIcons();
+}
+
+async function runFormatCheck() {
+    if (!currentProjectId) {
+        showToast('请先选择项目', 'error');
+        return;
+    }
+
+    const journalName = document.getElementById('formatJournalInput').value.trim();
+    if (!journalName) {
+        showToast('请输入目标期刊名称', 'error');
+        return;
+    }
+
+    const loading = document.getElementById('formatLoading');
+    const result = document.getElementById('formatResult');
+    const error = document.getElementById('formatError');
+    const btn = document.getElementById('formatCheckBtn');
+
+    loading.classList.remove('hidden');
+    result.classList.add('hidden');
+    error.classList.add('hidden');
+    btn.disabled = true;
+
+    try {
+        const data = await api('POST', '/submit/format-check', {
+            project_id: currentProjectId,
+            journal_name: journalName
+        });
+
+        loading.classList.add('hidden');
+
+        if (data.checklist && data.checklist.length > 0) {
+            currentFormatChecklist = data.checklist;
+            renderFormatChecklist(data);
+        } else {
+            error.classList.remove('hidden');
+            document.getElementById('formatErrorMsg').textContent = data.error || '未获取到格式要求，请检查期刊名称';
+        }
+    } catch (e) {
+        loading.classList.add('hidden');
+        error.classList.remove('hidden');
+        document.getElementById('formatErrorMsg').textContent = e.message || '请求失败';
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+function renderFormatChecklist(data) {
+    const container = document.getElementById('formatResult');
+    container.classList.remove('hidden');
+    container.innerHTML = '';
+
+    // Summary card
+    if (data.requirements_summary) {
+        const summaryCard = document.createElement('div');
+        summaryCard.className = 'bg-indigo-50 border border-indigo-100 rounded-2xl p-5';
+        summaryCard.innerHTML = `
+            <div class="flex items-center gap-2 mb-2">
+                <i data-lucide="info" class="w-4 h-4 text-indigo-500"></i>
+                <span class="text-xs font-bold text-indigo-700">${escapeHtml(data.journal_name || '')} 格式要求概要</span>
+            </div>
+            <p class="text-xs text-indigo-600 leading-relaxed">${escapeHtml(data.requirements_summary)}</p>
+        `;
+        container.appendChild(summaryCard);
+    }
+
+    const severityStyles = {
+        'required': 'border-l-red-400 bg-red-50/30',
+        'recommended': 'border-l-amber-400 bg-amber-50/20',
+        'optional': 'border-l-slate-300 bg-slate-50/30',
+    };
+    const severityLabels = {
+        'required': '必须',
+        'recommended': '建议',
+        'optional': '可选',
+    };
+    const severityBadgeColors = {
+        'required': 'bg-red-100 text-red-600',
+        'recommended': 'bg-amber-100 text-amber-600',
+        'optional': 'bg-slate-100 text-slate-500',
+    };
+    const categoryIcons = {
+        'structure': 'layout',
+        'formatting': 'type',
+        'citation': 'quote',
+        'length': 'ruler',
+        'language': 'globe',
+        'figures': 'image',
+        'abstract': 'file-text',
+    };
+
+    const form = document.createElement('div');
+    form.className = 'space-y-3';
+    form.id = 'formatChecklistForm';
+
+    data.checklist.forEach((item, idx) => {
+        const row = document.createElement('div');
+        const borderStyle = severityStyles[item.severity] || severityStyles['optional'];
+        row.className = `border-l-4 ${borderStyle} rounded-xl p-4 flex items-start gap-3`;
+        row.innerHTML = `
+            <input type="checkbox" class="format-check-item mt-1 shrink-0 w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500" data-index="${idx}" checked>
+            <div class="flex-1 space-y-2">
+                <div class="flex items-center gap-2 flex-wrap">
+                    <span class="text-[10px] font-bold px-2 py-0.5 rounded ${severityBadgeColors[item.severity] || 'bg-slate-100 text-slate-500'}">${severityLabels[item.severity] || item.severity}</span>
+                    <span class="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-600">${escapeHtml(item.category || '')}</span>
+                    <span class="text-xs font-bold text-slate-700">${escapeHtml(item.description || '')}</span>
+                </div>
+                ${item.current_state ? `<p class="text-[11px] text-slate-400"><span class="font-bold">当前状态:</span> ${escapeHtml(item.current_state)}</p>` : ''}
+                <p class="text-[11px] text-blue-600"><span class="font-bold">建议:</span> ${escapeHtml(item.suggestion || '')}</p>
+            </div>
+        `;
+        form.appendChild(row);
+    });
+    container.appendChild(form);
+
+    // Apply button
+    const applySection = document.createElement('div');
+    applySection.className = 'flex items-center justify-between pt-2';
+    applySection.innerHTML = `
+        <label class="flex items-center gap-2 text-xs text-slate-400">
+            <input type="checkbox" id="formatSelectAll" checked onchange="toggleAllFormatChecks(this.checked)" class="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500">
+            全选/取消全选
+        </label>
+        <button onclick="applySelectedFormats()" class="px-6 py-2.5 bg-blue-600 text-white rounded-xl text-xs font-bold hover:bg-blue-700 shadow-md">
+            应用选中修改
+        </button>
+    `;
+    container.appendChild(applySection);
+    lucide.createIcons();
+}
+
+function toggleAllFormatChecks(checked) {
+    document.querySelectorAll('.format-check-item').forEach(cb => { cb.checked = checked; });
+}
+
+async function applySelectedFormats() {
+    const checked = document.querySelectorAll('.format-check-item:checked');
+    if (checked.length === 0) {
+        showToast('请至少选择一项修改建议', 'error');
+        return;
+    }
+    if (!currentProjectId) {
+        showToast('请先选择项目', 'error');
+        return;
+    }
+
+    const selectedSuggestions = [];
+    checked.forEach(cb => {
+        const idx = parseInt(cb.dataset.index);
+        if (currentFormatChecklist[idx]) {
+            selectedSuggestions.push(currentFormatChecklist[idx]);
+        }
+    });
+
+    // Group suggestions by implied section, apply to all sections
+    const sections = await api('GET', `/sections?project_id=${currentProjectId}`).catch(() => []);
+    if (!sections || sections.length === 0) {
+        showToast('未找到可修改的章节', 'error');
+        return;
+    }
+
+    showToast('正在应用格式修改...', 'info');
+
+    let appliedCount = 0;
+    for (const sec of sections) {
+        try {
+            const res = await api('POST', '/submit/format-apply', {
+                project_id: currentProjectId,
+                section_name: sec.section_name,
+                suggestions: selectedSuggestions
+            });
+            if (res.status === 'ok') appliedCount++;
+        } catch (e) {
+            console.error(`Apply failed for ${sec.section_name}:`, e);
+        }
+    }
+
+    if (appliedCount > 0) {
+        showToast(`已对 ${appliedCount} 个章节应用格式修改`, 'success');
+    } else {
+        showToast('格式修改未成功应用', 'error');
+    }
+}
+
+// ---- Session Management (Multi-turn Conversation) ----
+function startNewSession() {
+    currentSessionId = null;
+    localStorage.removeItem('citewise_session');
+    const c = document.getElementById('dynamicChatContent');
+    if (c) c.innerHTML = `
+        <div class="flex gap-4 mb-8">
+            <div class="w-10 h-10 rounded-xl bg-slate-900 flex items-center justify-center text-white shadow-xl">
+                <i data-lucide="cpu"></i>
+            </div>
+            <div class="max-w-[80%] bg-white border border-slate-200 p-6 rounded-3xl rounded-tl-none shadow-sm space-y-4">
+                <p class="text-slate-700 leading-relaxed text-sm">
+                    CiteWise V3 协同系统已就绪。新对话已创建，我将自动调度 Agent 为您服务。
+                </p>
+            </div>
+        </div>`;
+    lucide.createIcons();
+    showToast('新对话已创建', 'success');
+}
+
+async function loadSessionHistory() {
+    if (!currentSessionId || !currentProjectId) return;
+    try {
+        const messages = await (await api('GET', `/sessions/${currentSessionId}/messages`)).json();
+        if (!messages || messages.length === 0) return;
+        const c = document.getElementById('dynamicChatContent');
+        if (!c) return;
+        // Clear welcome message
+        c.innerHTML = '';
+        for (const msg of messages) {
+            if (msg.role === 'user') {
+                appendUserMessage(msg.content);
+            } else if (msg.role === 'assistant') {
+                const d = document.createElement('div');
+                d.className = 'flex gap-4 mb-8 animate__animated animate__fadeInUp';
+                d.innerHTML = `
+                    <div class="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center text-white shrink-0">
+                        <i data-lucide="git-branch"></i>
+                    </div>
+                    <div class="flex-1 bg-white border border-slate-200 p-6 rounded-3xl text-sm leading-relaxed shadow-sm">${escapeHtml(msg.content.substring(0, 500))}${msg.content.length > 500 ? '...' : ''}</div>`;
+                c.appendChild(d);
+            }
+        }
+        lucide.createIcons();
+        scrollChat();
+    } catch (e) {
+        console.warn('Load session history failed:', e);
+    }
 }
 
 function completeStep(id) {
@@ -940,6 +1756,7 @@ function confirmCreateAgent() {
     });
     renderAgentStatus();
     renderAgentCards();
+    saveAgentConfig();
     toggleModal('createAgentModal');
     showToast('Agent 节点就绪', 'success');
 }
@@ -954,6 +1771,7 @@ function renderAgentCards() {
     }
     c.innerHTML = agents.map(a => {
         const assignedSkills = skills.filter(s => s.agent === a.id);
+        const assignedTools = tools.filter(t => t.agent === a.id);
         return `<div onclick="openAgentDetail('${a.id}')" class="interactive-card bg-white p-6 rounded-3xl border border-slate-100 shadow-sm cursor-pointer hover:border-indigo-200 transition-all">
             <div class="flex justify-between items-start mb-4">
                 <div class="p-3 bg-${a.color}-50 text-${a.color}-600 rounded-xl">
@@ -963,9 +1781,9 @@ function renderAgentCards() {
             </div>
             <h4 class="font-bold text-slate-800 text-base mb-1">${escapeHtml(a.name)}</h4>
             <p class="text-xs text-slate-500 mb-3">${escapeHtml(a.description || '自定义 Agent')}</p>
-            <div class="flex items-center gap-2 text-[10px] text-slate-400">
-                <i data-lucide="zap" class="w-3 h-3"></i>
-                <span>${assignedSkills.length} 个 Skill</span>
+            <div class="flex items-center gap-3 text-[10px] text-slate-400">
+                <span class="flex items-center gap-1"><i data-lucide="zap" class="w-3 h-3"></i>${assignedSkills.length} Skill</span>
+                <span class="flex items-center gap-1"><i data-lucide="wrench" class="w-3 h-3"></i>${assignedTools.length} Tool</span>
             </div>
         </div>`;
     }).join('');
@@ -980,6 +1798,8 @@ function openAgentDetail(agentId) {
 
     const assignedSkills = skills.filter(s => s.agent === agentId);
     const availableSkills = skills.filter(s => s.agent !== agentId);
+    const assignedTools = tools.filter(t => t.agent === agentId);
+    const availableTools = tools.filter(t => t.agent !== agentId);
 
     const el = document.getElementById('agentDetailContent');
     if (!el) return;
@@ -991,7 +1811,10 @@ function openAgentDetail(agentId) {
                 <div class="flex-1">
                     <h2 class="text-2xl font-bold text-slate-800">${escapeHtml(a.name)}</h2>
                     <p class="text-sm text-slate-500 mt-1">${escapeHtml(a.description || '自定义 Agent')}</p>
-                    <span class="inline-block mt-2 text-[10px] font-bold uppercase px-2.5 py-1 rounded-full ${a.status === 'RUNNING' ? 'bg-amber-100 text-amber-700' : 'bg-green-100 text-green-700'}">${a.status}</span>
+                    <div class="flex items-center gap-3 mt-2">
+                        <span class="text-[10px] font-bold uppercase px-2.5 py-1 rounded-full ${a.status === 'RUNNING' ? 'bg-amber-100 text-amber-700' : 'bg-green-100 text-green-700'}">${a.status}</span>
+                        <span class="text-[10px] text-slate-400">${assignedSkills.length} Skill · ${assignedTools.length} Tool</span>
+                    </div>
                 </div>
                 <button onclick="deleteAgent('${a.id}')" class="p-3 hover:bg-red-100 rounded-xl text-slate-400 hover:text-red-500 transition-all" title="删除 Agent"><i data-lucide="trash-2" class="w-5 h-5"></i></button>
             </div>
@@ -1040,6 +1863,43 @@ function openAgentDetail(agentId) {
                 </div>
             </div>
             ` : ''}
+
+            <div class="bg-white border border-slate-200 rounded-2xl p-6 space-y-4">
+                <div class="flex justify-between items-center">
+                    <h3 class="font-bold text-slate-700">可使用的 Tools</h3>
+                    <span class="text-[10px] text-slate-400">${assignedTools.length} 个</span>
+                </div>
+                ${assignedTools.length > 0 ? assignedTools.map(t => `
+                    <div class="flex items-center justify-between p-4 bg-blue-50 border border-blue-100 rounded-xl">
+                        <div class="flex items-center gap-3">
+                            <div class="p-2 bg-blue-100 rounded-lg"><i data-lucide="${t.icon}" class="w-4 h-4 text-blue-600"></i></div>
+                            <div>
+                                <p class="font-bold text-sm text-slate-800">${escapeHtml(t.title)}</p>
+                                <p class="text-[10px] text-slate-400">${escapeHtml(t.desc)}</p>
+                                <p class="text-[9px] text-slate-300 mt-0.5">指令词: ${escapeHtml(t.trigger)}</p>
+                            </div>
+                        </div>
+                        <button onclick="unassignTool(${t.id}, '${a.id}')" class="text-[10px] px-3 py-1.5 rounded-lg bg-white border border-red-200 text-red-500 hover:bg-red-50 font-bold">移除</button>
+                    </div>
+                `).join('') : '<div class="text-center text-slate-400 py-6 text-xs">暂无分配的 Tool</div>'}
+            </div>
+
+            ${availableTools.length > 0 ? `
+            <div class="bg-white border border-slate-200 rounded-2xl p-6 space-y-4">
+                <h3 class="font-bold text-slate-700">可分配的 Tools</h3>
+                <div class="grid grid-cols-2 gap-3">
+                    ${availableTools.map(t => `
+                        <div class="flex items-center justify-between p-3 bg-slate-50 border border-slate-100 rounded-xl">
+                            <div class="flex items-center gap-2">
+                                <i data-lucide="${t.icon}" class="w-4 h-4 text-slate-400"></i>
+                                <span class="text-sm font-semibold text-slate-700">${escapeHtml(t.title)}</span>
+                            </div>
+                            <button onclick="assignTool(${t.id}, '${a.id}')" class="text-[10px] px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700 font-bold">分配</button>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+            ` : ''}
         </div>
     `;
     lucide.createIcons();
@@ -1055,6 +1915,7 @@ function saveAgentPrompt(agentId) {
     const editor = document.getElementById('agentPromptEditor');
     if (a && editor) {
         a.prompt = editor.value;
+        saveAgentConfig();
         showToast('提示词已保存', 'success');
     }
 }
@@ -1063,6 +1924,7 @@ function assignSkill(skillId, agentId) {
     const s = skills.find(x => x.id === skillId);
     if (s) {
         s.agent = agentId;
+        saveAgentConfig();
         openAgentDetail(agentId);
         renderSkillLibrary();
         renderAgentCards();
@@ -1074,11 +1936,52 @@ function unassignSkill(skillId, agentId) {
     const s = skills.find(x => x.id === skillId);
     if (s) {
         s.agent = '';
+        saveAgentConfig();
         openAgentDetail(agentId);
         renderSkillLibrary();
         renderAgentCards();
         showToast(`已移除「${s.title}」`, 'success');
     }
+}
+
+function assignTool(toolId, agentId) {
+    const t = tools.find(x => x.id === toolId);
+    if (t) {
+        t.agent = agentId;
+        saveAgentConfig();
+        openAgentDetail(agentId);
+        renderToolLibrary();
+        renderAgentCards();
+        showToast(`已将「${t.title}」分配给 ${agents.find(a => a.id === agentId)?.name}`, 'success');
+    }
+}
+
+function unassignTool(toolId, agentId) {
+    const t = tools.find(x => x.id === toolId);
+    if (t) {
+        t.agent = '';
+        saveAgentConfig();
+        openAgentDetail(agentId);
+        renderToolLibrary();
+        renderAgentCards();
+        showToast(`已移除「${t.title}」`, 'success');
+    }
+}
+
+// ============ Agent Config Persistence ============
+function saveAgentConfig() {
+    localStorage.setItem('citewise_agents', JSON.stringify(agents));
+    localStorage.setItem('citewise_skills', JSON.stringify(skills));
+    localStorage.setItem('citewise_tools', JSON.stringify(tools));
+}
+
+function loadAgentConfig() {
+    const savedAgents = localStorage.getItem('citewise_agents');
+    const savedSkills = localStorage.getItem('citewise_skills');
+    const savedTools = localStorage.getItem('citewise_tools');
+    if (savedAgents) { try { agents = JSON.parse(savedAgents); } catch { /* keep defaults */ } }
+    if (savedSkills) { try { skills = JSON.parse(savedSkills); } catch { /* keep defaults */ } }
+    if (savedTools) { try { tools = JSON.parse(savedTools); } catch { /* keep defaults */ } }
 }
 
 function deleteAgent(agentId) {
@@ -1089,6 +1992,8 @@ function deleteAgent(agentId) {
     if (!confirm(`确定删除 Agent「${agents.find(a => a.id === agentId)?.name}」？`)) return;
     agents = agents.filter(a => a.id !== agentId);
     skills.forEach(s => { if (s.agent === agentId) s.agent = ''; });
+    tools.forEach(t => { if (t.agent === agentId) t.agent = ''; });
+    saveAgentConfig();
     closeAgentDetail();
     renderAgentCards();
     renderAgentStatus();
@@ -1100,37 +2005,39 @@ function deleteAgent(agentId) {
 function renderSkillLibrary() {
     const c = document.getElementById('skillListContainer');
     if (!c) return;
-    c.innerHTML = skills.map(s =>
-        `<div onclick="openSkillDetail(${s.id})" class="interactive-card bg-white p-6 rounded-3xl border border-slate-100 shadow-sm group animate__animated animate__fadeIn cursor-pointer">
+    c.innerHTML = skills.map(s => {
+        const agentName = s.agent ? (agents.find(a => a.id === s.agent)?.name || s.agent) : '未分配';
+        return `<div onclick="openSkillDetail(${s.id})" class="interactive-card bg-white p-6 rounded-3xl border border-slate-100 shadow-sm group animate__animated animate__fadeIn cursor-pointer">
             <div class="flex justify-between items-start mb-4">
                 <div class="p-2 bg-amber-50 text-amber-600 rounded-lg">
                     <i data-lucide="${s.icon}" class="w-5 h-5"></i>
                 </div>
-                <span class="text-[7px] uppercase font-bold text-blue-500 mt-2">On ${escapeHtml(s.agent)} Agent</span>
+                <span class="text-[7px] uppercase font-bold ${s.agent ? 'text-blue-500' : 'text-slate-300'} mt-2">On ${escapeHtml(agentName)}</span>
             </div>
             <h4 class="font-bold text-slate-800 text-sm mb-1">${escapeHtml(s.title)}</h4>
             <p class="text-[10px] text-slate-500">${escapeHtml(s.desc)}</p>
-        </div>`
-    ).join('');
+        </div>`;
+    }).join('');
     lucide.createIcons();
 }
 
 function renderToolLibrary() {
     const c = document.getElementById('toolListContainer');
     if (!c) return;
-    c.innerHTML = tools.map(t =>
-        `<div onclick="openToolDetail(${t.id})" class="interactive-card bg-white p-6 rounded-3xl border border-slate-100 shadow-sm group animate__animated animate__fadeIn cursor-pointer">
+    c.innerHTML = tools.map(t => {
+        const agentName = t.agent ? (agents.find(a => a.id === t.agent)?.name || t.agent) : '未分配';
+        return `<div onclick="openToolDetail(${t.id})" class="interactive-card bg-white p-6 rounded-3xl border border-slate-100 shadow-sm group animate__animated animate__fadeIn cursor-pointer">
             <div class="flex justify-between mb-4">
                 <div class="p-2 bg-blue-50 text-blue-600 rounded-lg">
                     <i data-lucide="${t.icon}" class="w-5 h-5"></i>
                 </div>
-                <span class="px-2 py-1 bg-slate-50 text-slate-400 text-[8px] font-bold rounded">Fixed</span>
+                <span class="text-[7px] uppercase font-bold ${t.agent ? 'text-blue-500' : 'text-slate-300'} mt-2">On ${escapeHtml(agentName)}</span>
             </div>
             <h4 class="font-bold text-slate-800 text-sm mb-1">${escapeHtml(t.title)}</h4>
             <p class="text-[10px] text-slate-500">${escapeHtml(t.desc)}</p>
             <div class="mt-4 pt-3 border-t border-slate-50 text-[8px] text-slate-400 font-bold uppercase">指令词: ${escapeHtml(t.trigger)}</div>
-        </div>`
-    ).join('');
+        </div>`;
+    }).join('');
     lucide.createIcons();
 }
 
@@ -1160,6 +2067,7 @@ function openSkillDetail(id) {
 
 function deleteSkill(id) {
     skills = skills.filter(s => s.id !== id);
+    saveAgentConfig();
     renderSkillLibrary();
     closeAssetDetail('skill');
     showToast('Skill 已删除');
@@ -1202,6 +2110,7 @@ function openToolDetail(id) {
 
 function deleteTool(id) {
     tools = tools.filter(t => t.id !== id);
+    saveAgentConfig();
     renderToolLibrary();
     closeAssetDetail('tool');
     showToast('工具已删除');
@@ -1610,10 +2519,17 @@ function switchView(id, btn) {
 
     closePaperDetail();
     closeDraftEditor();
-    closeAssetDetail('skill');
-    closeAssetDetail('tool');
     closeAgentDetail();
     closeAllDropdowns();
+
+    // Initialize combined views
+    if (id === 'extensionView') {
+        switchExtensionTab('skillTab');
+    } else if (id === 'agentHubView') {
+        switchAgentHubTab('agentConfigTab');
+    } else if (id === 'submitView') {
+        switchSubmitTab('journalTab');
+    }
 }
 
 function toggleModal(id) {

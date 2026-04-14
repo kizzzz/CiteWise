@@ -197,6 +197,7 @@ def writer_node(state: AgentState) -> dict:
         result = _writer.generate_section(
             section_name, section_topic, research_result, project_id,
             state.get("framework", []),
+            state.get("gen_params"),
         )
 
     thinking = list(state.get("thinking_steps", [])) + result.get("thinking_steps", [])

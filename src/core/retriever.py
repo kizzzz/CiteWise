@@ -80,19 +80,75 @@ def reciprocal_rank_fusion(vector_results: list[dict], bm25_results: list[dict],
 
 
 def rerank_by_relevance(query: str, candidates: list[dict], top_k: int = RERANK_TOP_K) -> list[dict]:
-    """基于向量距离的重排序（MVP 简化版，不用 BGE-reranker 以减少依赖）"""
-    # 计算查询与候选的相似度
-    # 这里用向量距离作为 rerank 依据（MVP 简化）
+    """混合重排序：LLM 精排（候选≤10）+ 向量距离粗排（候选>10）"""
+    if not candidates:
+        return []
+
+    # For >10 candidates, use simple scoring first to reduce to 10
+    if len(candidates) > 10:
+        scored = []
+        for c in candidates:
+            score = 1.0 / (1.0 + c.get("distance", 1.0))
+            query_terms = set(re.findall(r'[a-zA-Z]{3,}', query.lower()))
+            text_terms = set(re.findall(r'[a-zA-Z]{3,}', c["text"].lower()))
+            overlap = len(query_terms & text_terms)
+            if overlap > 0:
+                score += 0.1 * overlap
+            scored.append((c, score))
+        scored.sort(key=lambda x: x[1], reverse=True)
+        candidates = [c for c, s in scored[:10]]
+
+    # LLM-based reranking for the top candidates
+    try:
+        return _llm_rerank(query, candidates, top_k)
+    except Exception as e:
+        logger.warning(f"LLM rerank failed, falling back to simple scoring: {e}")
+        # Fallback to simple scoring
+        scored = []
+        for c in candidates:
+            score = 1.0 / (1.0 + c.get("distance", 1.0))
+            scored.append((c, score))
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return [c for c, s in scored[:top_k]]
+
+
+def _llm_rerank(query: str, candidates: list[dict], top_k: int) -> list[dict]:
+    """Use LLM to score candidate chunks for relevance to the query."""
+    from src.core.llm import llm_client
+
+    # Build candidate list for LLM
+    chunks_text = ""
+    for i, c in enumerate(candidates):
+        chunks_text += f"\n[{i+1}] {c['text'][:200]}\n"
+
+    prompt = f"""请评估以下文献片段与查询的相关性，给每个片段打1-10分。
+查询：{query}
+
+片段：
+{chunks_text}
+
+请用 JSON 格式回复：{{"scores": [分数1, 分数2, ...]}}
+只回复 JSON。"""
+
+    messages = [
+        {"role": "system", "content": "你是相关性评估器，只输出 JSON。"},
+        {"role": "user", "content": prompt},
+    ]
+
+    result = llm_client.chat_json(messages, temperature=0.1, max_retries=1)
+    scores = result.get("scores", [])
+
+    if not scores or len(scores) != len(candidates):
+        raise ValueError(f"Score count mismatch: got {len(scores)}, expected {len(candidates)}")
+
+    # Combine LLM score with vector distance
     scored = []
-    for c in candidates:
-        # 简单关键词匹配加分
-        score = 1.0 / (1.0 + c.get("distance", 1.0))
-        query_terms = set(re.findall(r'[a-zA-Z]{3,}', query.lower()))
-        text_terms = set(re.findall(r'[a-zA-Z]{3,}', c["text"].lower()))
-        overlap = len(query_terms & text_terms)
-        if overlap > 0:
-            score += 0.1 * overlap
-        scored.append((c, score))
+    for i, c in enumerate(candidates):
+        llm_score = float(scores[i])
+        vec_score = 1.0 / (1.0 + c.get("distance", 1.0))
+        # Weighted: 70% LLM score, 30% vector similarity
+        combined = 0.7 * llm_score + 0.3 * vec_score * 10
+        scored.append((c, combined))
 
     scored.sort(key=lambda x: x[1], reverse=True)
     return [c for c, s in scored[:top_k]]

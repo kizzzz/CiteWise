@@ -34,6 +34,11 @@ async def create_section(req: SectionCreate):
             coordinator.process,
             f"帮我写{req.name}", req.project_id,
             section_name=req.name,
+            gen_params={
+                "style": req.style,
+                "target_length": req.target_length,
+                "citation_density": req.citation_density,
+            },
         )
 
         # 保存到数据库

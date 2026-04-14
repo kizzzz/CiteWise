@@ -18,6 +18,7 @@ jieba>=0.42.1
 # PDF 解析
 PyPDF2>=3.0.1
 pdfplumber>=0.10.0
+docling>=2.0.0
 
 # 数据 & 可视化
 pandas>=2.1.0

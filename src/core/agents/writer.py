@@ -29,7 +29,7 @@ class WriterAgent(BaseAgent):
 
     def generate_section(self, section_name: str, section_topic: str,
                          research_result: dict, project_id: str,
-                         framework: list = None) -> dict:
+                         framework: list = None, gen_params: dict = None) -> dict:
         """基于检索结果生成章节"""
         self.reset()
         self._ensure_deps()
@@ -37,10 +37,19 @@ class WriterAgent(BaseAgent):
 
         from src.core.prompt import prompt_engine, SYSTEM_PROMPT_BASE
 
+        # Extract generation parameters with defaults
+        params = gen_params or {}
+        style = params.get("style", "学术正式")
+        target_words = params.get("target_length", 1000)
+        citation_density = params.get("citation_density", "正常")
+
+        # Map citation density to minimum citations per paragraph
+        density_map = {"高": "每段至少 2 个引用", "正常": "适当引用关键观点", "低": "仅在关键结论处引用"}
+        citation_instruction = density_map.get(citation_density, "适当引用关键观点")
+
         rag_content = research_result.get("rag_content", "")
         chunks = research_result.get("chunks", [])
         previous_summary = self._wm.get_previous_summary()
-        project_state = self._pm.get_project_state(project_id) if project_id else {}
 
         system = SYSTEM_PROMPT_BASE
         task_prompt = prompt_engine.build_section_prompt(
@@ -49,8 +58,12 @@ class WriterAgent(BaseAgent):
             reference_material=rag_content,
             framework=str(framework) if framework else "",
             previous_summary=previous_summary,
-            target_words=1000,
+            target_words=target_words,
+            writing_style=style,
         )
+
+        # Add citation density instruction
+        task_prompt += f"\n\n### 引用密度要求\n{citation_instruction}"
 
         messages = [
             {"role": "system", "content": system},
@@ -125,6 +138,7 @@ class WriterAgent(BaseAgent):
     def process(self, user_input: str, project_id: str = None, **kwargs) -> dict:
         intent = kwargs.get("intent", "generate")
         research_result = kwargs.get("research_result", {})
+        gen_params = kwargs.get("gen_params", None)
 
         if intent == "modify":
             target_content = kwargs.get("target_content", "")
@@ -134,5 +148,5 @@ class WriterAgent(BaseAgent):
             section_topic = kwargs.get("section_topic", "")
             framework = kwargs.get("framework", [])
             return self.generate_section(
-                section_name, section_topic, research_result, project_id, framework
+                section_name, section_topic, research_result, project_id, framework, gen_params
             )

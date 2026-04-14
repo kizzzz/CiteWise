@@ -38,6 +38,7 @@ async def chat_endpoint(req: ChatRequest):
                 api_key=req.api_key or None,
                 base_url=req.base_url or None,
                 model=req.model or None,
+                session_id=req.session_id or None,
             ):
                 yield event
 
@@ -90,3 +91,37 @@ async def sub_chat_endpoint(req: SubChatRequest):
     except Exception as e:
         logger.error(f"Sub-chat error: {e}", exc_info=True)
         return {"content": "处理出错，请稍后重试", "type": "error"}
+
+
+# --- Session Management ---
+
+@router.get("/sessions")
+async def list_sessions(project_id: str):
+    """列出项目的对话会话"""
+    from src.core.memory import project_memory
+    sessions = project_memory.list_sessions(project_id)
+    return sessions
+
+
+@router.get("/sessions/{session_id}/messages")
+async def get_session_messages(session_id: str, limit: int = 20):
+    """获取会话消息历史"""
+    from src.core.memory import project_memory
+    messages = project_memory.get_session_messages(session_id, limit=limit)
+    return messages
+
+
+@router.delete("/sessions/{session_id}")
+async def delete_session(session_id: str):
+    """删除对话会话"""
+    from src.core.memory import project_memory
+    project_memory.delete_session(session_id)
+    return {"status": "ok"}
+
+
+@router.post("/sessions")
+async def create_session(project_id: str, title: str = ""):
+    """创建新的对话会话"""
+    from src.core.memory import project_memory
+    session_id = project_memory.create_session(project_id, title)
+    return {"session_id": session_id}

@@ -161,6 +161,25 @@ class ProjectMemory:
                     api_key_encrypted TEXT DEFAULT '',
                     created_at TEXT DEFAULT (datetime('now'))
                 );
+
+                CREATE TABLE IF NOT EXISTS chat_sessions (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    title TEXT DEFAULT '',
+                    created_at TEXT DEFAULT (datetime('now'))
+                );
+
+                CREATE TABLE IF NOT EXISTS chat_messages (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    role TEXT NOT NULL DEFAULT 'user',
+                    content TEXT NOT NULL DEFAULT '',
+                    intent TEXT DEFAULT '',
+                    created_at TEXT DEFAULT (datetime('now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_chat_session ON chat_messages(session_id);
+                CREATE INDEX IF NOT EXISTS idx_chat_project ON chat_messages(project_id);
             """)
             # Migration: add columns if they don't exist (SQLite ALTER TABLE)
             try:
@@ -415,6 +434,66 @@ class ProjectMemory:
         with self._get_conn() as conn:
             conn.execute("UPDATE users SET api_key=? WHERE id=?", (api_key, user_id))
             conn.commit()
+
+    # --- 对话会话管理 ---
+    def create_session(self, project_id: str, title: str = "") -> str:
+        """创建新的对话会话，返回 session_id"""
+        sid = f"sess_{uuid.uuid4().hex[:8]}"
+        with self._get_conn() as conn:
+            conn.execute(
+                "INSERT INTO chat_sessions (id, project_id, title) VALUES (?, ?, ?)",
+                (sid, project_id, title)
+            )
+            conn.commit()
+        return sid
+
+    def list_sessions(self, project_id: str, limit: int = 20) -> list[dict]:
+        """列出项目的对话会话"""
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM chat_sessions WHERE project_id=? ORDER BY created_at DESC LIMIT ?",
+                (project_id, limit)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_session(self, session_id: str) -> Optional[dict]:
+        """获取会话信息"""
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM chat_sessions WHERE id=?", (session_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def delete_session(self, session_id: str):
+        """删除会话及其消息"""
+        with self._get_conn() as conn:
+            conn.execute("DELETE FROM chat_messages WHERE session_id=?", (session_id,))
+            conn.execute("DELETE FROM chat_sessions WHERE id=?", (session_id,))
+            conn.commit()
+
+    def save_message(self, session_id: str, project_id: str,
+                     role: str, content: str, intent: str = ""):
+        """保存一条对话消息"""
+        mid = f"msg_{uuid.uuid4().hex[:8]}"
+        with self._get_conn() as conn:
+            conn.execute(
+                "INSERT INTO chat_messages (id, session_id, project_id, role, content, intent) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (mid, session_id, project_id, role, content, intent)
+            )
+            conn.commit()
+
+    def get_session_messages(self, session_id: str, limit: int = 20) -> list[dict]:
+        """获取会话的最近 N 条消息"""
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT role, content, intent FROM chat_messages "
+                "WHERE session_id=? ORDER BY created_at DESC LIMIT ?",
+                (session_id, limit)
+            ).fetchall()
+        # Return in chronological order (oldest first)
+        messages = [dict(r) for r in reversed(rows)]
+        return messages
 
 
 class WorkingMemory:

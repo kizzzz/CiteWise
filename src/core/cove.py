@@ -186,3 +186,102 @@ def run_cove(content: str, rag_chunks: list[dict]) -> dict:
         "summary": verification.get("summary", ""),
         "flagged_claims": flagged,
     }
+
+
+# ========== 异步版本（用于流式管线）==========
+
+async def async_extract_claims(content: str, api_key: str = None, base_url: str = None) -> list[dict]:
+    """异步提取可验证的声明"""
+    if not content or len(content) < 50:
+        return []
+
+    prompt = EXTRACT_CLAIMS_PROMPT.format(content=content[:4000])
+    messages = [
+        {"role": "system", "content": "你是学术事实核查专家。准确提取声明，不遗漏关键事实。"},
+        {"role": "user", "content": prompt},
+    ]
+
+    try:
+        # 使用 glm-4-flash 降低成本
+        result = await llm_client.achat_json(messages, temperature=0.2, max_tokens=2000)
+        claims = result.get("claims", [])
+        logger.info(f"CoVe 异步提取到 {len(claims)} 个声明")
+        return claims
+    except Exception as e:
+        logger.error(f"CoVe 异步声明提取失败: {e}")
+        return []
+
+
+async def async_verify_claims(claims: list[dict], rag_chunks: list[dict]) -> dict:
+    """异步验证声明准确性"""
+    if not claims:
+        return {"verifications": [], "overall_score": 1.0, "summary": "无可验证声明"}
+
+    from src.core.retriever import format_chunks_with_citations
+    reference = format_chunks_with_citations(rag_chunks) if rag_chunks else "（无参考材料）"
+
+    claims_text = "\n".join(
+        f"[{c['id']}] {c['claim']}"
+        + (f" (引用: {c.get('citation', '无')})" if c.get('has_citation') else "")
+        for c in claims
+    )
+
+    prompt = VERIFY_CLAIMS_PROMPT.format(
+        claims_text=claims_text,
+        reference_material=reference,
+    )
+
+    messages = [
+        {"role": "system", "content": "你是学术事实核查专家。严格根据参考材料验证声明。"},
+        {"role": "user", "content": prompt},
+    ]
+
+    try:
+        result = await llm_client.achat_json(messages, temperature=0.2, max_tokens=2000)
+        logger.info(f"CoVe 异步验证完成, overall_score={result.get('overall_score', 'N/A')}")
+        return result
+    except Exception as e:
+        logger.error(f"CoVe 异步验证失败: {e}")
+        return {
+            "verifications": [],
+            "overall_score": 0.0,
+            "summary": f"验证过程出错: {str(e)[:100]}",
+        }
+
+
+async def async_run_cove(content: str, rag_chunks: list[dict]) -> dict:
+    """异步完整 CoVe 流程
+
+    Returns:
+        同 run_cove 的返回格式
+    """
+    claims = await async_extract_claims(content)
+    if not claims:
+        return {
+            "claims": [],
+            "verifications": [],
+            "overall_score": 1.0,
+            "summary": "内容过短或无可验证声明",
+            "flagged_claims": [],
+        }
+
+    verification = await async_verify_claims(claims, rag_chunks)
+    verifications = verification.get("verifications", [])
+
+    flagged = []
+    for v in verifications:
+        if v.get("status") in ("contradicted", "unverifiable") or v.get("confidence") == "low":
+            claim = next((c for c in claims if c.get("id") == v.get("claim_id")), None)
+            flagged.append({
+                "claim": claim.get("claim", "") if claim else "",
+                "status": v.get("status"),
+                "issue": v.get("issue", v.get("evidence", "")),
+            })
+
+    return {
+        "claims": claims,
+        "verifications": verifications,
+        "overall_score": verification.get("overall_score", 0.0),
+        "summary": verification.get("summary", ""),
+        "flagged_claims": flagged,
+    }

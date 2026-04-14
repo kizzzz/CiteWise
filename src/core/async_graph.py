@@ -10,7 +10,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
 
 from src.core.graph_state import AgentState
-from src.core.agents.router import RouterAgent
+from src.core.agents.router import RouterAgent, get_model_for_intent
 from src.core.agents.researcher import ResearchAgent
 from src.core.agents.writer import WriterAgent
 from src.core.agents.analyst import AnalystAgent
@@ -142,6 +142,7 @@ async def async_writer_node(state: AgentState) -> dict:
         result = await _async_generate_section(
             section_name, section_topic, research_result, project_id,
             state.get("framework", []),
+            state.get("gen_params"),
         )
 
     thinking = list(state.get("thinking_steps", [])) + result.get("thinking_steps", [])
@@ -158,13 +159,21 @@ async def async_writer_node(state: AgentState) -> dict:
 
 
 async def _async_generate_section(section_name, section_topic, research_result,
-                                   project_id, framework):
+                                   project_id, framework, gen_params=None):
     """异步章节生成"""
     from src.core.llm import llm_client
     from src.core.prompt import prompt_engine, SYSTEM_PROMPT_BASE
     from src.core.source_annotation import annotate_sources, summarize_section
     from src.core.retriever import validate_citations
     from src.core.memory import project_memory, working_memory
+
+    params = gen_params or {}
+    style = params.get("style", "学术正式")
+    target_words = params.get("target_length", 1000)
+    citation_density = params.get("citation_density", "正常")
+
+    density_map = {"高": "每段至少 2 个引用", "正常": "适当引用关键观点", "低": "仅在关键结论处引用"}
+    citation_instruction = density_map.get(citation_density, "适当引用关键观点")
 
     rag_content = research_result.get("rag_content", "")
     chunks = research_result.get("chunks", [])
@@ -177,8 +186,10 @@ async def _async_generate_section(section_name, section_topic, research_result,
         reference_material=rag_content,
         framework=str(framework) if framework else "",
         previous_summary=previous_summary,
-        target_words=1000,
+        target_words=target_words,
+        writing_style=style,
     )
+    task_prompt += f"\n\n### 引用密度要求\n{citation_instruction}"
 
     messages = [
         {"role": "system", "content": system},
@@ -219,18 +230,32 @@ async def _async_generate_section(section_name, section_topic, research_result,
 
 async def stream_chat_response(user_input: str, project_id: str,
                                 api_key: str = None, base_url: str = None,
-                                model: str = None):
+                                model: str = None, session_id: str = None):
     """直接流式对话 — 路由 → RAG → 流式 LLM 输出
 
-    Yields SSE events: agent_start, agent_end, token, content, citations, done
+    Yields SSE events: agent_start, agent_end, token, content, citations, done, session
     """
     import json
     from src.core.llm import llm_client
     from src.core.prompt import SYSTEM_PROMPT_BASE
     from src.core.source_annotation import annotate_sources
     from src.core.retriever import validate_citations, hybrid_search
+    from src.core.memory import project_memory
 
     start_time = time.time()
+
+    # --- Session management ---
+    if not session_id:
+        session_id = project_memory.create_session(
+            project_id, title=user_input[:30]
+        )
+    # Send session_id to frontend
+    yield {"event": "session", "data": json.dumps({"session_id": session_id}, ensure_ascii=False)}
+
+    # --- Load conversation history ---
+    history_messages = project_memory.get_session_messages(session_id, limit=20)
+    # Save user message
+    project_memory.save_message(session_id, project_id, "user", user_input)
 
     # Step 1: Route intent (sync, fast)
     yield {"event": "agent_start", "data": json.dumps({
@@ -302,13 +327,20 @@ async def stream_chat_response(user_input: str, project_id: str,
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT_BASE},
-        {"role": "user", "content": prompt},
     ]
+    # Add conversation history (exclude the current message which is already in prompt)
+    for msg in history_messages:
+        if msg.get("role") in ("user", "assistant"):
+            messages.append({"role": msg["role"], "content": msg["content"]})
+    # Add current prompt as the latest user message
+    messages.append({"role": "user", "content": prompt})
 
     # Token-level streaming
     collected_tokens = []
     try:
-        async for token in llm_client.achat_stream(messages, temperature=0.7, api_key=api_key, base_url=base_url, model=model):
+        # Use tiered model routing if user didn't specify a model
+        effective_model = model or get_model_for_intent(intent)
+        async for token in llm_client.achat_stream(messages, temperature=0.7, api_key=api_key, base_url=base_url, model=effective_model):
             collected_tokens.append(token)
             yield {"event": "token", "data": json.dumps({"text": token}, ensure_ascii=False)}
     except Exception as e:
@@ -341,7 +373,36 @@ async def stream_chat_response(user_input: str, project_id: str,
     if sources:
         yield {"event": "sources", "data": json.dumps(sources, ensure_ascii=False)}
 
+    # CoVe 事实性验证（仅在有 RAG 材料且内容足够长时运行）
+    should_verify = (
+        chunks
+        and len(full_response) > 200
+        and intent in ("explore", "summarize", "websearch", "generate", "analyze")
+    )
+    logger.info(f"CoVe check: chunks={len(chunks)}, resp_len={len(full_response)}, intent={intent}, verify={should_verify}")
+    if should_verify:
+        try:
+            from src.core.cove import async_run_cove
+            cove_result = await async_run_cove(full_response, chunks)
+            yield {"event": "verification", "data": json.dumps({
+                "overall_score": cove_result.get("overall_score", 0.0),
+                "summary": cove_result.get("summary", ""),
+                "claim_count": len(cove_result.get("claims", [])),
+                "flagged_count": len(cove_result.get("flagged_claims", [])),
+                "flagged_claims": cove_result.get("flagged_claims", []),
+            }, ensure_ascii=False)}
+        except Exception as e:
+            logger.warning(f"CoVe 验证失败（非致命）: {e}")
+
     yield {"event": "done", "data": json.dumps({"type": "text"}, ensure_ascii=False)}
+
+    # Save assistant response to chat history
+    try:
+        project_memory.save_message(
+            session_id, project_id, "assistant", full_response, intent
+        )
+    except Exception as e:
+        logger.warning(f"Failed to save assistant message: {e}")
 
     # Record eval
     try:

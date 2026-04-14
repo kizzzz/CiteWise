@@ -42,9 +42,9 @@ def parse_file(filepath: str, filename: Optional[str] = None) -> dict:
 
 
 def _parse_pdf(filepath: str, filename: str) -> dict:
-    """PDF 解析 — 复用 rag.parse_pdf"""
-    from src.core.rag import parse_pdf
-    return parse_pdf(filepath)
+    """PDF 解析 — 优先使用 Docling 高级解析，fallback 到 pdfplumber"""
+    from src.core.advanced_parser import parse_pdf_with_fallback
+    return parse_pdf_with_fallback(filepath)
 
 
 def _parse_docx(filepath: str, filename: str) -> dict:
