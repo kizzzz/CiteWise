@@ -1,8 +1,9 @@
 """API Key 管理路由 — 多供应商 API Key 验证与配置记录"""
 import logging
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Depends
 
+from api.deps import require_auth
 from api.schemas import ApiKeyVerifyRequest
 
 logger = logging.getLogger(__name__)
@@ -114,7 +115,7 @@ async def verify_api_key(req: ApiKeyVerifyRequest):
 
 
 @router.post("/apikeys/save")
-async def save_user_api_key_config(req: Request):
+async def save_user_api_key_config(req: Request, user: dict = Depends(require_auth)):
     """记录用户已配置 API Key（仅保存布尔标记，密钥本身由前端 localStorage 管理）"""
     body = await req.json()
     user_id = body.get("user_id", "")

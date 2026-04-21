@@ -2,8 +2,9 @@
 import asyncio
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 
+from api.deps import require_auth
 from api.schemas import SearchRequest
 
 logger = logging.getLogger(__name__)
@@ -13,7 +14,7 @@ MAX_QUERY_LENGTH = 200
 
 
 @router.post("/search")
-async def web_search_endpoint(req: SearchRequest):
+async def web_search_endpoint(req: SearchRequest, user: dict = Depends(require_auth)):
     if not req.query or not req.query.strip():
         raise HTTPException(status_code=422, detail="Query must not be empty")
     if len(req.query) > MAX_QUERY_LENGTH:

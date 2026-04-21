@@ -43,7 +43,7 @@ async def async_responder_node(state: AgentState) -> dict:
     ]
 
     from src.core.llm import llm_client
-    from src.core.prompt import SYSTEM_PROMPT_BASE
+    from src.core.prompt import SYSTEM_PROMPT_BASE, prompt_engine
     from src.core.source_annotation import annotate_sources
     from src.core.retriever import validate_citations
 
@@ -55,24 +55,7 @@ async def async_responder_node(state: AgentState) -> dict:
     thinking = list(state.get("thinking_steps", []))
     thinking.append("调用 LLM 生成回答...")
 
-    safe_input = user_input.replace("```", " ").replace("<|", " ").strip()
-
-    if intent == "websearch" and web_results:
-        web_snippets = "\n".join(
-            f"- [{r['title']}]({r['url']}): {r['snippet']}" for r in web_results
-        )
-        prompt = (
-            f"## 用户问题\n{safe_input}\n\n"
-            f"## 网络搜索结果\n{web_snippets}\n\n"
-            f"## 知识库文献\n{rag_content or '（无）'}\n\n"
-            "请整合以上来源回答用户问题，使用 [作者, 年份] 标注引用。"
-        )
-    else:
-        prompt = (
-            f"## 用户问题\n{safe_input}\n\n"
-            f"## 参考材料（知识库检索）\n{rag_content or '（无相关内容）'}\n\n"
-            "请基于参考材料和自身知识回答，使用 [作者, 年份] 标注引用。"
-        )
+    prompt = prompt_engine.build_response_prompt(user_input, rag_content, web_results, intent)
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT_BASE},
@@ -237,7 +220,7 @@ async def stream_chat_response(user_input: str, project_id: str,
     """
     import json
     from src.core.llm import llm_client
-    from src.core.prompt import SYSTEM_PROMPT_BASE
+    from src.core.prompt import SYSTEM_PROMPT_BASE, prompt_engine
     from src.core.source_annotation import annotate_sources
     from src.core.retriever import validate_citations, hybrid_search
     from src.core.memory import project_memory
@@ -278,7 +261,7 @@ async def stream_chat_response(user_input: str, project_id: str,
     }, ensure_ascii=False)}
 
     try:
-        chunks = hybrid_search(user_input, project_id=project_id)
+        chunks = hybrid_search(user_input, project_id=project_id, intent=intent)
         if chunks:
             rag_parts = []
             for i, c in enumerate(chunks[:10]):
@@ -301,72 +284,101 @@ async def stream_chat_response(user_input: str, project_id: str,
         "duration_ms": int((time.time() - start_time) * 1000),
     }, ensure_ascii=False)}
 
-    # Step 3: Stream LLM response
-    yield {"event": "agent_start", "data": json.dumps({
-        "agent": "Responder", "detail": "生成回答..."
-    }, ensure_ascii=False)}
+    # Step 3: Route to appropriate agent for streaming response
+    is_writer_intent = intent in ("generate", "modify")
 
-    safe_input = user_input.replace("```", " ").replace("<|", " ").strip()
+    if is_writer_intent:
+        # --- Writer path: stream section generation ---
+        yield {"event": "agent_start", "data": json.dumps({
+            "agent": "Writer", "detail": f"处理: {intent}"
+        }, ensure_ascii=False)}
 
-    if intent == "websearch" and web_results:
-        web_snippets = "\n".join(
-            f"- [{r['title']}]({r['url']}): {r['snippet']}" for r in web_results
-        )
-        prompt = (
-            f"## 用户问题\n{safe_input}\n\n"
-            f"## 网络搜索结果\n{web_snippets}\n\n"
-            f"## 知识库文献\n{rag_content or '（无）'}\n\n"
-            "请整合以上来源回答用户问题，使用 [作者, 年份] 标注引用。"
-        )
+        research_result = {
+            "chunks": chunks,
+            "rag_content": rag_content,
+            "web_results": web_results,
+            "sources": [],
+        }
+
+        if intent == "modify":
+            target_content = ""
+            writer_result = _writer.modify_content(
+                user_input, target_content, research_result, project_id,
+            )
+            full_response = writer_result.get("content", "")
+        else:
+            section_name = _parse_section_name(user_input)
+            section_topic = _parse_section_topic(user_input, section_name)
+            writer_result = await _async_generate_section(
+                section_name, section_topic, research_result, project_id,
+                [], None,
+            )
+            full_response = writer_result.get("content", "")
+
+        full_response = annotate_sources(full_response, chunks, web_results)
+        content_type = "section"
+
+        elapsed = int((time.time() - start_time) * 1000)
+        yield {"event": "agent_end", "data": json.dumps({
+            "agent": "Writer", "detail": f"生成 {len(full_response)} 字",
+            "duration_ms": elapsed,
+        }, ensure_ascii=False)}
+
+        yield {"event": "content", "data": json.dumps({
+            "content": full_response, "type": content_type,
+        }, ensure_ascii=False)}
+
     else:
-        prompt = (
-            f"## 用户问题\n{safe_input}\n\n"
-            f"## 参考材料（知识库检索）\n{rag_content or '（无相关内容）'}\n\n"
-            "请基于参考材料和自身知识回答，使用 [作者, 年份] 标注引用。"
-        )
+        # --- Responder path: stream discussion response ---
+        yield {"event": "agent_start", "data": json.dumps({
+            "agent": "Responder", "detail": "生成回答..."
+        }, ensure_ascii=False)}
 
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT_BASE},
-    ]
-    # Add conversation history (exclude the current message which is already in prompt)
-    for msg in history_messages:
-        if msg.get("role") in ("user", "assistant"):
-            messages.append({"role": msg["role"], "content": msg["content"]})
-    # Add current prompt as the latest user message
-    messages.append({"role": "user", "content": prompt})
+        prompt = prompt_engine.build_response_prompt(user_input, rag_content, web_results, intent)
 
-    # Token-level streaming
-    collected_tokens = []
-    try:
-        # Use tiered model routing if user didn't specify a model
-        effective_model = model or get_model_for_intent(intent)
-        async for token in llm_client.achat_stream(messages, temperature=0.7, api_key=api_key, base_url=base_url, model=effective_model):
-            collected_tokens.append(token)
-            yield {"event": "token", "data": json.dumps({"text": token}, ensure_ascii=False)}
-    except Exception as e:
-        logger.error(f"LLM 流式调用失败: {e}")
-        yield {"event": "error", "data": json.dumps({"message": "LLM 调用失败"}, ensure_ascii=False)}
-        return
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT_BASE},
+        ]
+        # Add conversation history (exclude the current message which is already in prompt)
+        for msg in history_messages:
+            if msg.get("role") in ("user", "assistant"):
+                messages.append({"role": msg["role"], "content": msg["content"]})
+        # Add current prompt as the latest user message
+        messages.append({"role": "user", "content": prompt})
 
-    full_response = "".join(collected_tokens)
-    full_response = annotate_sources(full_response, chunks, web_results)
+        # Token-level streaming
+        collected_tokens = []
+        try:
+            # Use tiered model routing if user didn't specify a model
+            effective_model = model or get_model_for_intent(intent)
+            async for token in llm_client.achat_stream(messages, temperature=0.7, api_key=api_key, base_url=base_url, model=effective_model):
+                collected_tokens.append(token)
+                yield {"event": "token", "data": json.dumps({"text": token}, ensure_ascii=False)}
+        except Exception as e:
+            logger.error(f"LLM 流式调用失败: {e}")
+            yield {"event": "error", "data": json.dumps({"message": "LLM 调用失败"}, ensure_ascii=False)}
+            return
 
+        full_response = "".join(collected_tokens)
+        full_response = annotate_sources(full_response, chunks, web_results)
+        content_type = "text"
+
+        elapsed = int((time.time() - start_time) * 1000)
+        yield {"event": "agent_end", "data": json.dumps({
+            "agent": "Responder", "detail": f"生成 {len(full_response)} 字",
+            "duration_ms": elapsed,
+        }, ensure_ascii=False)}
+
+        yield {"event": "content", "data": json.dumps({
+            "content": full_response, "type": content_type,
+        }, ensure_ascii=False)}
+
+    # Shared post-processing for both paths
     citation_check = validate_citations(full_response, chunks) if chunks else {}
     sources = [
         {"title": c.get("paper_title", ""), "citation": c.get("citation", "")}
         for c in chunks
     ] if chunks else []
-
-    elapsed = int((time.time() - start_time) * 1000)
-    yield {"event": "agent_end", "data": json.dumps({
-        "agent": "Responder", "detail": f"生成 {len(full_response)} 字",
-        "duration_ms": elapsed,
-    }, ensure_ascii=False)}
-
-    # Send final content (complete, with source annotations)
-    yield {"event": "content", "data": json.dumps({
-        "content": full_response, "type": "text",
-    }, ensure_ascii=False)}
 
     if citation_check:
         yield {"event": "citations", "data": json.dumps(citation_check, ensure_ascii=False)}
@@ -394,7 +406,7 @@ async def stream_chat_response(user_input: str, project_id: str,
         except Exception as e:
             logger.warning(f"CoVe 验证失败（非致命）: {e}")
 
-    yield {"event": "done", "data": json.dumps({"type": "text"}, ensure_ascii=False)}
+    yield {"event": "done", "data": json.dumps({"type": content_type}, ensure_ascii=False)}
 
     # Save assistant response to chat history
     try:

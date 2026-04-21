@@ -1,14 +1,16 @@
 """知识地图 API — 文献关系可视化"""
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+
+from api.deps import require_auth
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
 @router.get("/knowledge-map")
-async def get_knowledge_map(project_id: str):
+async def get_knowledge_map(project_id: str, user: dict = Depends(require_auth)):
     """获取文献关系图数据（节点 + 边）"""
     from src.core.memory import project_memory
     from src.core.recommender import get_paper_embeddings, compute_similarity_matrix, build_citation_graph

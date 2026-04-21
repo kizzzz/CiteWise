@@ -49,14 +49,20 @@ def _is_rate_limited(client_ip: str) -> bool:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """启动时初始化 BM25 索引"""
+    """启动时初始化 BM25 索引（优先加载持久化索引）"""
     try:
-        from src.core.embedding import vector_store
         from src.core.retriever import bm25_index
-        all_chunks = vector_store.get_all_chunks()
-        if all_chunks:
-            bm25_index.build_index(all_chunks)
-            logger.info(f"BM25 索引已初始化，共 {len(all_chunks)} 个片段")
+        # 先尝试加载序列化索引
+        if bm25_index.load():
+            logger.info(f"BM25 索引从缓存加载成功")
+        else:
+            # 缓存不存在，从 ChromaDB 全量重建
+            from src.core.embedding import vector_store
+            all_chunks = vector_store.get_all_chunks()
+            if all_chunks:
+                bm25_index.build_index(all_chunks)
+                bm25_index.save()
+                logger.info(f"BM25 索引已构建并保存，共 {len(all_chunks)} 个片段")
     except Exception as e:
         logger.warning(f"BM25 初始化失败: {e}")
 
@@ -104,6 +110,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5328",
         "http://127.0.0.1:5328",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
         "http://localhost:10000",
         "http://127.0.0.1:10000",
         "http://localhost:8080",

@@ -2,8 +2,9 @@
 import asyncio
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 
+from api.deps import require_auth
 from api.schemas import JournalRecommendRequest, FormatCheckRequest, FormatApplyRequest
 
 logger = logging.getLogger(__name__)
@@ -11,7 +12,7 @@ router = APIRouter()
 
 
 @router.post("/submit/recommend")
-async def recommend_journals_endpoint(req: JournalRecommendRequest):
+async def recommend_journals_endpoint(req: JournalRecommendRequest, user: dict = Depends(require_auth)):
     """获取期刊推荐"""
     if not req.project_id or not req.project_id.strip():
         raise HTTPException(status_code=422, detail="project_id must not be empty")
@@ -30,7 +31,7 @@ async def recommend_journals_endpoint(req: JournalRecommendRequest):
 
 
 @router.post("/submit/format-check")
-async def format_check_endpoint(req: FormatCheckRequest):
+async def format_check_endpoint(req: FormatCheckRequest, user: dict = Depends(require_auth)):
     """格式检查"""
     if not req.project_id or not req.project_id.strip():
         raise HTTPException(status_code=422, detail="project_id must not be empty")
@@ -50,7 +51,7 @@ async def format_check_endpoint(req: FormatCheckRequest):
 
 
 @router.post("/submit/format-apply")
-async def format_apply_endpoint(req: FormatApplyRequest):
+async def format_apply_endpoint(req: FormatApplyRequest, user: dict = Depends(require_auth)):
     """应用格式修改"""
     if not req.project_id or not req.project_id.strip():
         raise HTTPException(status_code=422, detail="project_id must not be empty")

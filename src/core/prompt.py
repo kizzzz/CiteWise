@@ -276,6 +276,31 @@ class PromptEngine:
             reference_material=reference_material,
         )
 
+    def build_response_prompt(self, user_input: str, rag_content: str = "",
+                               web_results: list = None, intent: str = "explore") -> str:
+        """组装 Responder/Stream 的用户 Prompt（统一入口）
+
+        所有 responder_node / async_responder_node / stream_chat_response 共用此方法。
+        """
+        safe_input = user_input.replace("```", " ").replace("<|", " ").strip()
+
+        if intent == "websearch" and web_results:
+            web_snippets = "\n".join(
+                f"- [{r['title']}]({r['url']}): {r['snippet']}" for r in web_results
+            )
+            return (
+                f"## 用户问题\n{safe_input}\n\n"
+                f"## 网络搜索结果\n{web_snippets}\n\n"
+                f"## 知识库文献\n{rag_content or '（无）'}\n\n"
+                "请整合以上来源回答用户问题，使用 [作者, 年份] 标注引用。"
+            )
+
+        return (
+            f"## 用户问题\n{safe_input}\n\n"
+            f"## 参考材料（知识库检索）\n{rag_content or '（无相关内容）'}\n\n"
+            "请基于参考材料和自身知识回答，使用 [作者, 年份] 标注引用。"
+        )
+
 
 # 全局单例
 prompt_engine = PromptEngine()

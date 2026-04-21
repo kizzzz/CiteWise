@@ -4,9 +4,10 @@ import io
 import json
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 
+from api.deps import require_auth
 from api.schemas import ExtractionRequest, FieldsRequest
 
 logger = logging.getLogger(__name__)
@@ -22,7 +23,7 @@ async def get_fields():
 
 
 @router.post("/fields")
-async def save_fields(req: FieldsRequest):
+async def save_fields(req: FieldsRequest, user: dict = Depends(require_auth)):
     if not req.fields:
         raise HTTPException(status_code=422, detail="Fields list must not be empty")
     if len(req.fields) > MAX_FIELDS_COUNT:
@@ -31,7 +32,7 @@ async def save_fields(req: FieldsRequest):
 
 
 @router.post("/extraction")
-async def run_extraction(req: ExtractionRequest):
+async def run_extraction(req: ExtractionRequest, user: dict = Depends(require_auth)):
     if not req.fields:
         raise HTTPException(status_code=422, detail="Fields list must not be empty")
     if len(req.fields) > MAX_FIELDS_COUNT:
@@ -83,7 +84,7 @@ async def run_extraction(req: ExtractionRequest):
 
 
 @router.get("/extraction/export")
-async def export_extraction(project_id: str):
+async def export_extraction(project_id: str, user: dict = Depends(require_auth)):
     """导出结构化提取结果为 Excel 文件"""
     import pandas as pd
     from src.core.memory import project_memory

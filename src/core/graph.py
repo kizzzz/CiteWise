@@ -104,7 +104,7 @@ def responder_node(state: AgentState) -> dict:
     ]
 
     from src.core.llm import llm_client
-    from src.core.prompt import SYSTEM_PROMPT_BASE
+    from src.core.prompt import SYSTEM_PROMPT_BASE, prompt_engine
     from src.core.source_annotation import annotate_sources
     from src.core.retriever import validate_citations
 
@@ -116,24 +116,7 @@ def responder_node(state: AgentState) -> dict:
     thinking = list(state.get("thinking_steps", []))
     thinking.append("调用 LLM 生成回答...")
 
-    safe_input = user_input.replace("```", " ").replace("<|", " ").strip()
-
-    if intent == "websearch" and web_results:
-        web_snippets = "\n".join(
-            f"- [{r['title']}]({r['url']}): {r['snippet']}" for r in web_results
-        )
-        prompt = (
-            f"## 用户问题\n{safe_input}\n\n"
-            f"## 网络搜索结果\n{web_snippets}\n\n"
-            f"## 知识库文献\n{rag_content or '（无）'}\n\n"
-            "请整合以上来源回答用户问题，使用 [作者, 年份] 标注引用。"
-        )
-    else:
-        prompt = (
-            f"## 用户问题\n{safe_input}\n\n"
-            f"## 参考材料（知识库检索）\n{rag_content or '（无相关内容）'}\n\n"
-            "请基于参考材料和自身知识回答，使用 [作者, 年份] 标注引用。"
-        )
+    prompt = prompt_engine.build_response_prompt(user_input, rag_content, web_results, intent)
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT_BASE},

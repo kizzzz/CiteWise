@@ -5,9 +5,11 @@ import json
 import asyncio
 import logging
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
+from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
+from api.deps import require_auth
 from config.settings import PAPERS_DIR
 
 logger = logging.getLogger(__name__)
@@ -19,20 +21,20 @@ from src.core.file_parser import is_supported, get_file_extension, parse_file
 
 
 @router.get("/papers")
-async def list_papers(project_id: str):
+async def list_papers(project_id: str, user: dict = Depends(require_auth)):
     from src.core.memory import project_memory
     return project_memory.get_papers(project_id)
 
 
 @router.post("/papers/upload")
-async def upload_papers(files: list[UploadFile] = File(...), project_id: str = Form(...)):
+async def upload_papers(files: list[UploadFile] = File(...), project_id: str = Form(...), user: dict = Depends(require_auth)):
     """上传论文 — JSON 响应（适合简单前端）"""
     result = await _process_uploads(files, project_id)
     return result
 
 
 @router.post("/papers/upload/stream")
-async def upload_papers_stream(files: list[UploadFile] = File(...), project_id: str = Form(...)):
+async def upload_papers_stream(files: list[UploadFile] = File(...), project_id: str = Form(...), user: dict = Depends(require_auth)):
     """上传论文 — SSE 流式返回进度（适合需要实时进度的前端）"""
     async def progress_generator():
         from src.core.rag import chunk_paper
@@ -127,8 +129,8 @@ async def upload_papers_stream(files: list[UploadFile] = File(...), project_id: 
             from src.core.retriever import bm25_index
 
             await asyncio.to_thread(vector_store.index_chunks, all_chunks)
-            all_indexed = await asyncio.to_thread(vector_store.get_all_chunks)
-            await asyncio.to_thread(bm25_index.build_index, all_indexed)
+            await asyncio.to_thread(bm25_index.add_chunks, all_chunks)
+            await asyncio.to_thread(bm25_index.save)
 
         yield {"event": "done", "data": json.dumps({
             "message": f"已入库 {processed} 篇论文，{len(all_chunks)} 个片段" +
@@ -202,8 +204,8 @@ async def _process_uploads(files: list[UploadFile], project_id: str) -> dict:
 
     if all_chunks:
         await asyncio.to_thread(vector_store.index_chunks, all_chunks)
-        all_indexed = await asyncio.to_thread(vector_store.get_all_chunks)
-        await asyncio.to_thread(bm25_index.build_index, all_indexed)
+        await asyncio.to_thread(bm25_index.add_chunks, all_chunks)
+        await asyncio.to_thread(bm25_index.save)
 
     return {
         "message": f"已入库 {processed} 篇论文，{len(all_chunks)} 个片段" +
@@ -214,7 +216,7 @@ async def _process_uploads(files: list[UploadFile], project_id: str) -> dict:
 
 
 @router.delete("/papers/{paper_id}")
-async def delete_paper(paper_id: str, project_id: str = ""):
+async def delete_paper(paper_id: str, project_id: str = "", user: dict = Depends(require_auth)):
     """删除论文及其向量索引"""
     if not project_id:
         raise HTTPException(status_code=400, detail="project_id is required")
@@ -231,24 +233,25 @@ async def delete_paper(paper_id: str, project_id: str = ""):
     vector_store.delete_paper(paper_id)
     project_memory.delete_paper_cascade(paper_id)
 
-    # 重建 BM25 索引
+    # 重建 BM25 索引（删除后全量重建）
     all_chunks = await asyncio.to_thread(vector_store.get_all_chunks)
     if all_chunks:
         await asyncio.to_thread(bm25_index.build_index, all_chunks)
     else:
         bm25_index.bm25 = None
+    await asyncio.to_thread(bm25_index.save)
 
     return {"status": "ok", "paper_id": paper_id}
 
 
 @router.get("/papers/{paper_id}")
-async def get_paper_detail(paper_id: str):
+async def get_paper_detail(paper_id: str, user: dict = Depends(require_auth)):
     from src.core.memory import project_memory
     from src.core.embedding import vector_store
 
     row = project_memory.get_paper_row(paper_id)
     if not row:
-        return {"error": "Paper not found"}
+        raise HTTPException(status_code=404, detail="Paper not found")
 
     paper = dict(row)
 
@@ -310,3 +313,20 @@ async def get_paper_detail(paper_id: str):
         paper["full_text"] = raw_text or ""
 
     return paper
+
+
+class PaperTitleUpdate(BaseModel):
+    title: str
+
+
+@router.patch("/papers/{paper_id}/title")
+async def update_paper_title(paper_id: str, body: PaperTitleUpdate, user: dict = Depends(require_auth)):
+    """Update a paper's title"""
+    from src.core.memory import project_memory
+
+    paper = project_memory.get_paper_row(paper_id)
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+
+    project_memory.update_paper_title(paper_id, body.title.strip())
+    return {"status": "ok", "paper_id": paper_id, "title": body.title.strip()}

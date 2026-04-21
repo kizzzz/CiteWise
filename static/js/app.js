@@ -122,6 +122,13 @@ async function api(method, path, body = null) {
         opts.headers['Authorization'] = `Bearer ${currentUser.token}`;
     }
     const resp = await fetch(`${API_BASE}/api${path}`, opts);
+    if (resp.status === 401) {
+        // Token expired or invalid — force re-login
+        currentUser = null;
+        localStorage.removeItem('citewise_user');
+        updateAuthUI();
+        throw new Error('登录已过期，请重新登录');
+    }
     if (!resp.ok) {
         const err = await resp.text();
         throw new Error(err);
@@ -226,11 +233,28 @@ function renderPapers(papers) {
             <div class="w-10 h-10 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center mb-4">
                 <i data-lucide="file-text" class="w-5 h-5"></i>
             </div>
-            <h4 class="font-bold text-slate-800 text-sm mb-1">${escapeHtml(p.title || '未命名')}</h4>
+            <h4 class="font-bold text-slate-800 text-sm mb-1" ondblclick="event.stopPropagation(); editPaperTitle('${p.id}', this)">${escapeHtml(p.title || '未命名')}</h4>
             <p class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">${p.year || '?'} · ${escapeHtml((p.authors || '').substring(0, 20))}</p>
         </div>`
     ).join('');
     lucide.createIcons();
+}
+
+async function editPaperTitle(paperId, el) {
+    const currentTitle = el.textContent.trim();
+    const newTitle = prompt('编辑论文标题:', currentTitle);
+    if (!newTitle || newTitle.trim() === currentTitle) return;
+    try {
+        const res = await api('PATCH', `/papers/${paperId}/title`, { title: newTitle.trim() });
+        if (res.ok) {
+            el.textContent = newTitle.trim();
+            showToast('标题已更新', 'success');
+        } else {
+            showToast('更新失败', 'error');
+        }
+    } catch (e) {
+        showToast('网络错误', 'error');
+    }
 }
 
 async function handleUploadPapers() {
@@ -238,6 +262,10 @@ async function handleUploadPapers() {
     if (!files.length || !currentProjectId) {
         showToast('请先选择项目', 'error');
         return;
+    }
+
+    if (files.length > 1) {
+        showToast(`已选择 ${files.length} 个文件，开始上传...`);
     }
 
     const prog = document.getElementById('uploadProgress');
@@ -821,7 +849,8 @@ function switchAgentHubTab(tabId) {
 function renderSkillListInto(container) {
     if (!container) return;
     container.innerHTML = skills.map(s =>
-        `<div onclick="openSkillDetail(${s.id})" class="interactive-card bg-white p-6 rounded-3xl border border-slate-100 shadow-sm group animate__animated animate__fadeIn cursor-pointer">
+        `<div onclick="openSkillDetail(${s.id})" class="interactive-card bg-white p-6 rounded-3xl border border-slate-100 shadow-sm group animate__animated animate__fadeIn cursor-pointer relative">
+            <button onclick="event.stopPropagation(); deleteSkill(${s.id}); switchExtensionTab('skillTab')" class="absolute top-3 right-3 w-6 h-6 rounded-full bg-red-50 text-red-400 hover:bg-red-100 hover:text-red-600 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all text-xs font-bold">&times;</button>
             <div class="flex justify-between items-start mb-4">
                 <div class="p-2 bg-amber-50 text-amber-600 rounded-lg"><i data-lucide="${s.icon}" class="w-5 h-5"></i></div>
                 <span class="text-[7px] uppercase font-bold text-blue-500 mt-2">On ${escapeHtml(s.agent)} Agent</span>
@@ -835,7 +864,8 @@ function renderSkillListInto(container) {
 function renderToolListInto(container) {
     if (!container) return;
     container.innerHTML = tools.map(t =>
-        `<div onclick="openToolDetail(${t.id})" class="interactive-card bg-white p-6 rounded-3xl border border-slate-100 shadow-sm group animate__animated animate__fadeIn cursor-pointer">
+        `<div onclick="openToolDetail(${t.id})" class="interactive-card bg-white p-6 rounded-3xl border border-slate-100 shadow-sm group animate__animated animate__fadeIn cursor-pointer relative">
+            <button onclick="event.stopPropagation(); deleteTool(${t.id}); switchExtensionTab('toolTab')" class="absolute top-3 right-3 w-6 h-6 rounded-full bg-red-50 text-red-400 hover:bg-red-100 hover:text-red-600 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all text-xs font-bold">&times;</button>
             <div class="flex justify-between mb-4">
                 <div class="p-2 bg-blue-50 text-blue-600 rounded-lg"><i data-lucide="${t.icon}" class="w-5 h-5"></i></div>
                 <span class="px-2 py-1 bg-slate-50 text-slate-400 text-[8px] font-bold rounded">Fixed</span>
@@ -851,7 +881,8 @@ function renderAgentCardsInto(container) {
     if (!container) return;
     container.innerHTML = agents.map(a => {
         const assignedSkills = skills.filter(s => s.agent === a.id);
-        return `<div onclick="openAgentDetail('${a.id}')" class="interactive-card bg-white p-6 rounded-3xl border border-slate-100 shadow-sm cursor-pointer hover:border-indigo-200 transition-all">
+        return `<div onclick="openAgentDetail('${a.id}')" class="interactive-card bg-white p-6 rounded-3xl border border-slate-100 shadow-sm cursor-pointer hover:border-indigo-200 transition-all group relative">
+            <button onclick="event.stopPropagation(); deleteAgent('${a.id}'); switchAgentHubTab('agentConfigTab')" class="absolute top-3 right-3 w-6 h-6 rounded-full bg-red-50 text-red-400 hover:bg-red-100 hover:text-red-600 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all text-xs font-bold">&times;</button>
             <div class="flex justify-between items-start mb-4">
                 <div class="p-3 bg-${a.color}-50 text-${a.color}-600 rounded-xl"><i data-lucide="${a.icon}" class="w-6 h-6"></i></div>
                 <span class="text-[8px] font-bold uppercase px-2 py-1 rounded ${a.status === 'RUNNING' ? 'bg-amber-50 text-amber-600' : 'bg-green-50 text-green-600'}">${a.status}</span>
@@ -1512,11 +1543,13 @@ function startNewSession() {
 
 async function loadSessionHistory() {
     if (!currentSessionId || !currentProjectId) return;
+    const c = document.getElementById('dynamicChatContent');
+    if (!c) return;
+    // Guard: skip reload if chat already has content (preserves messages on view switch)
+    if (c.querySelector('.flex.gap-4')) return;
     try {
         const messages = await (await api('GET', `/sessions/${currentSessionId}/messages`)).json();
         if (!messages || messages.length === 0) return;
-        const c = document.getElementById('dynamicChatContent');
-        if (!c) return;
         // Clear welcome message
         c.innerHTML = '';
         for (const msg of messages) {
@@ -1529,7 +1562,7 @@ async function loadSessionHistory() {
                     <div class="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center text-white shrink-0">
                         <i data-lucide="git-branch"></i>
                     </div>
-                    <div class="flex-1 bg-white border border-slate-200 p-6 rounded-3xl text-sm leading-relaxed shadow-sm">${escapeHtml(msg.content.substring(0, 500))}${msg.content.length > 500 ? '...' : ''}</div>`;
+                    <div class="flex-1 bg-white border border-slate-200 p-6 rounded-3xl text-sm leading-relaxed shadow-sm">${escapeHtml(msg.content)}</div>`;
                 c.appendChild(d);
             }
         }
@@ -2529,6 +2562,12 @@ function switchView(id, btn) {
         switchAgentHubTab('agentConfigTab');
     } else if (id === 'submitView') {
         switchSubmitTab('journalTab');
+    } else if (id === 'chatView') {
+        // Reload chat history if chat area is empty (e.g. first switch back)
+        const chatContent = document.getElementById('dynamicChatContent');
+        if (chatContent && !chatContent.querySelector('.flex.gap-4')) {
+            loadSessionHistory();
+        }
     }
 }
 

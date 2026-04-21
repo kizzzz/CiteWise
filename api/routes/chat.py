@@ -4,9 +4,10 @@ import json
 import logging
 import time
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from sse_starlette.sse import EventSourceResponse
 
+from api.deps import require_auth
 from api.schemas import ChatRequest, SubChatRequest
 from src.eval.metrics import record_eval
 
@@ -20,7 +21,7 @@ _AGENT_NODES = {"supervisor", "researcher", "responder", "writer", "analyst"}
 
 
 @router.post("/chat")
-async def chat_endpoint(req: ChatRequest):
+async def chat_endpoint(req: ChatRequest, user: dict = Depends(require_auth)):
     """主对话 — 真正的 token 级 SSE 流式输出"""
     if not req.message or not req.message.strip():
         raise HTTPException(status_code=422, detail="Message must not be empty")
@@ -50,7 +51,7 @@ async def chat_endpoint(req: ChatRequest):
 
 
 @router.post("/chat/sub")
-async def sub_chat_endpoint(req: SubChatRequest):
+async def sub_chat_endpoint(req: SubChatRequest, user: dict = Depends(require_auth)):
     """子对话 — 章节级编辑（使用旧 coordinator 保持兼容）"""
     if not req.message or not req.message.strip():
         raise HTTPException(status_code=422, detail="Message must not be empty")
@@ -96,7 +97,7 @@ async def sub_chat_endpoint(req: SubChatRequest):
 # --- Session Management ---
 
 @router.get("/sessions")
-async def list_sessions(project_id: str):
+async def list_sessions(project_id: str, user: dict = Depends(require_auth)):
     """列出项目的对话会话"""
     from src.core.memory import project_memory
     sessions = project_memory.list_sessions(project_id)
@@ -104,7 +105,7 @@ async def list_sessions(project_id: str):
 
 
 @router.get("/sessions/{session_id}/messages")
-async def get_session_messages(session_id: str, limit: int = 20):
+async def get_session_messages(session_id: str, limit: int = 20, user: dict = Depends(require_auth)):
     """获取会话消息历史"""
     from src.core.memory import project_memory
     messages = project_memory.get_session_messages(session_id, limit=limit)
@@ -112,7 +113,7 @@ async def get_session_messages(session_id: str, limit: int = 20):
 
 
 @router.delete("/sessions/{session_id}")
-async def delete_session(session_id: str):
+async def delete_session(session_id: str, user: dict = Depends(require_auth)):
     """删除对话会话"""
     from src.core.memory import project_memory
     project_memory.delete_session(session_id)
@@ -120,7 +121,7 @@ async def delete_session(session_id: str):
 
 
 @router.post("/sessions")
-async def create_session(project_id: str, title: str = ""):
+async def create_session(project_id: str, title: str = "", user: dict = Depends(require_auth)):
     """创建新的对话会话"""
     from src.core.memory import project_memory
     session_id = project_memory.create_session(project_id, title)

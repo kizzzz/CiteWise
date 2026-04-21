@@ -3,9 +3,10 @@ import asyncio
 import logging
 import re
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import PlainTextResponse
 
+from api.deps import require_auth
 from api.schemas import SectionCreate, SectionUpdate
 
 logger = logging.getLogger(__name__)
@@ -16,13 +17,13 @@ SECTION_ID_PATTERN = re.compile(r'^sec_[0-9a-f]+$')
 
 
 @router.get("/sections")
-async def list_sections(project_id: str):
+async def list_sections(project_id: str, user: dict = Depends(require_auth)):
     from src.core.memory import project_memory
     return project_memory.get_unique_sections(project_id)
 
 
 @router.post("/sections")
-async def create_section(req: SectionCreate):
+async def create_section(req: SectionCreate, user: dict = Depends(require_auth)):
     from src.core.agents.coordinator import coordinator
     from src.core.memory import project_memory
 
@@ -60,7 +61,7 @@ async def create_section(req: SectionCreate):
 
 
 @router.put("/sections/{section_id}")
-async def update_section(section_id: str, req: SectionUpdate):
+async def update_section(section_id: str, req: SectionUpdate, user: dict = Depends(require_auth)):
     if not SECTION_ID_PATTERN.match(section_id):
         raise HTTPException(status_code=400, detail="Invalid section ID format")
     from src.core.memory import project_memory
@@ -69,7 +70,7 @@ async def update_section(section_id: str, req: SectionUpdate):
 
 
 @router.delete("/sections/{section_id}")
-async def delete_section(section_id: str):
+async def delete_section(section_id: str, user: dict = Depends(require_auth)):
     if not SECTION_ID_PATTERN.match(section_id):
         raise HTTPException(status_code=400, detail="Invalid section ID format")
     from src.core.memory import project_memory
@@ -78,7 +79,7 @@ async def delete_section(section_id: str):
 
 
 @router.get("/sections/export")
-async def export_document(project_id: str):
+async def export_document(project_id: str, user: dict = Depends(require_auth)):
     """导出所有章节为 Markdown 文档"""
     from src.core.memory import project_memory
 

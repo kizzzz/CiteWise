@@ -10,6 +10,9 @@ import logging
 import os
 import datetime
 
+from dotenv import load_dotenv
+load_dotenv(override=False)
+
 from fastapi import APIRouter, HTTPException, Request
 
 from api.schemas import RegisterRequest, LoginRequest
@@ -17,8 +20,13 @@ from api.schemas import RegisterRequest, LoginRequest
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# JWT config
-JWT_SECRET = os.getenv("JWT_SECRET", "citewise_jwt_secret_change_in_production")
+# JWT config — MUST be set via environment variable
+JWT_SECRET = os.getenv("JWT_SECRET")
+if not JWT_SECRET:
+    raise RuntimeError(
+        "JWT_SECRET environment variable is required. "
+        "Set it in .env or as an environment variable before starting the server."
+    )
 JWT_EXPIRE_HOURS = 72
 
 # Password hashing — PBKDF2 with per-user salt, pure Python
