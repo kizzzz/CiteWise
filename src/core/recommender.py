@@ -176,11 +176,13 @@ def _chunk_based_recommendations(project_id: str, papers: list[dict], top_k: int
         for r in results:
             other_pid = r.get("paper_id", "")
             if other_pid and other_pid != paper["id"]:
+                # Fallback title: try result field, then pid_to_title mapping
+                rec_title = r.get("paper_title", "") or pid_to_title.get(other_pid, "Unknown")
                 recommendations.append({
                     "source_paper_id": paper["id"],
                     "source_paper_title": pid_to_title.get(paper["id"], ""),
                     "recommended_paper_id": other_pid,
-                    "recommended_paper_title": r.get("paper_title", ""),
+                    "recommended_paper_title": rec_title,
                     "recommended_paper_authors": pid_to_authors.get(other_pid, ""),
                     "recommended_paper_year": pid_to_year.get(other_pid, ""),
                     "similarity_score": round(1.0 / (1.0 + r.get("distance", 1.0)), 3),

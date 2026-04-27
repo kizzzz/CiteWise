@@ -59,6 +59,7 @@ async def sub_chat_endpoint(req: SubChatRequest, user: dict = Depends(require_au
         raise HTTPException(status_code=422, detail=f"Message must not exceed {MAX_MESSAGE_LENGTH} characters")
     if not req.project_id or not req.project_id.strip():
         raise HTTPException(status_code=422, detail="project_id must not be empty")
+    start_time = time.time()
     try:
         from src.core.agents.coordinator import coordinator
 
@@ -82,6 +83,31 @@ async def sub_chat_endpoint(req: SubChatRequest, user: dict = Depends(require_au
         if content and rtype != "error":
             from src.core.memory import project_memory
             project_memory.save_section(req.project_id, req.section_name, content)
+
+        # Record eval
+        try:
+            citation_check = result.get("citations") or {}
+            _citation_accuracy = citation_check.get("verification_rate", 0.0) if citation_check else 0.0
+            _eval_meta = {}
+            if citation_check:
+                _eval_meta["citations"] = {
+                    "total": citation_check.get("total_citations", 0),
+                    "verified": citation_check.get("verified", 0),
+                }
+            record_eval(
+                session_id=f"s_{req.project_id}_{int(time.time())}",
+                project_id=req.project_id,
+                intent="modify",
+                task_type=rtype or "text",
+                success=rtype != "error",
+                response_time_ms=int((time.time() - start_time) * 1000),
+                has_citations=bool(citation_check),
+                citation_accuracy=round(_citation_accuracy, 4),
+                llm_model="glm-4.7",
+                metadata=_eval_meta if _eval_meta else None,
+            )
+        except Exception as e:
+            logger.warning(f"Sub-chat eval record failed: {e}")
 
         return {
             "content": content,

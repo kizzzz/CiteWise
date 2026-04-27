@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 
-from api.routes import chat, projects, papers, sections, extraction, search, auth, apikeys, recommendations, knowledge_map, submit
+from api.routes import chat, projects, papers, sections, extraction, search, auth, apikeys, recommendations, knowledge_map, submit, notes
 from src.eval.dashboard import router as eval_router
 
 logging.basicConfig(level=logging.INFO)
@@ -137,6 +137,7 @@ app.include_router(apikeys.router, prefix="/api")
 app.include_router(recommendations.router, prefix="/api")
 app.include_router(knowledge_map.router, prefix="/api")
 app.include_router(submit.router, prefix="/api")
+app.include_router(notes.router, prefix="/api")
 app.include_router(eval_router, prefix="/api")
 
 

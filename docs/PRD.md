@@ -1,723 +1,677 @@
 # CiteWise 智能研究助手 — 产品需求文档 (PRD)
 
-> **版本**: V3.2 (已校准代码)
-> **更新日期**: 2026-04-14 (代码验证更新)
+> **版本**: V3.2
+> **日期**: 2026-04-16
 > **产品定位**: AI 驱动的多 Agent 学术研究助手
-> **技术栈**: FastAPI + LangGraph + 智谱 GLM-4.7 + ChromaDB + Tailwind CSS SPA
-> **项目路径**: `C:/Users/77230/CiteWise/`
-> **访问地址**: `http://localhost:5328`
+> **一句话描述**: 上传论文，对话即得带引用的研究报告
 
 ---
 
-## 1. Executive Summary
+## 1. 产品概述
 
-### 1.1 Problem Statement
+### 1.1 我们解决什么问题
 
-学术研究者在文献综述和论文写作过程中面临三大核心痛点：(1) 大量论文阅读效率低下，难以快速定位关键信息；(2) 跨论文知识整合缺乏系统化工具，依赖人工对比和手动摘录；(3) 论文写作中的资料引用、框架搭建和内容生成缺乏智能辅助，重复劳动严重。现有方案（如 ChatPDF、SciSpace）多为单轮问答，缺乏多 Agent 协同、透明推理和全流程写作支持。
+学术研究者（尤其是研究生和青年学者）在文献综述和论文写作中面临三个核心痛点：
 
-### 1.2 Proposed Solution
+| 痛点 | 现状 | 影响 |
+|------|------|------|
+| **读不完** | 一篇论文 30-60 分钟精读，10 篇就要一整天 | 研究进展缓慢，综述难产 |
+| **对不上** | 跨论文的方法/数据/结论对比全靠手动摘抄 | 对比分析粗糙，遗漏关键差异 |
+| **写不出** | 面对空白页不知道从何下笔，引用格式反复出错 | 写作焦虑，产出效率极低 |
 
-CiteWise 是基于 **LangGraph Supervisor 多 Agent 编排架构** 的 AI 智能研究助手。通过声明式状态图调度 5 个专业 Agent（Supervisor / Researcher / Responder / Writer / Analyst），结合混合检索引擎（BM25 + 向量搜索 + RRF 融合）和三层记忆架构，为研究者提供从文献上传、知识检索、智能问答到论文写作的全链路支持。
+**现有方案的不足**：ChatPDF 只能单篇问答，SciSpace 缺少写作能力，Notion AI 没有文献溯源。没有一个工具能覆盖"上传→理解→对比→写作→导出"的完整链路。
 
-**核心差异化**：
-1. **LangGraph Supervisor 多 Agent 编排** — 声明式状态图，非简单链式调用
-2. **实时 Agent Timeline 可视化** — 用户可追踪每一步推理过程
-3. **三源标注系统** — `[KB]` 文献库 / `[WEB]` 联网 / `[AI]` 推理，来源透明可验证
-4. **混合检索引擎** — BM25 + 向量 + RRF 融合 + 重排序
-5. **内置评估体系** — AgentEval 面板，5 大核心指标 + 自动优化建议
+### 1.2 我们的解法
 
-### 1.3 Success Criteria
+CiteWise 是一个 **多 Agent 协作的 AI 研究助手**，核心思路是：
 
-| KPI | 目标值 | 衡量方式 |
-|-----|--------|----------|
-| 检索召回率 (Recall@20) | >= 85% | 标注数据集回归评测 |
-| 引用标注准确率 | >= 95% | 人工抽检 100 条引用 |
-| 首 Token 延迟 (TTFT) | < 3s (P95) | SSE 流式输出首 token 时间戳 |
-| 任务成功率 | >= 85% | AgentEval 自动统计 |
-| 用户满意度 | >= 4.2/5.0 | 用户反馈评分均值 |
+```
+用户上传论文 → AI 自动解析建库 → 用户用自然语言对话 → AI 检索+生成+标注来源 → 输出带引用的研究内容
+```
+
+**五个不可替代的产品差异化**：
+
+1. **多 Agent 编排** — 5 个专业 Agent 协同工作（不是简单的单轮问答）
+2. **混合检索引擎** — 关键词 + 语义向量双路检索，准确率远超单一方案
+3. **三色来源标注** — 每段内容自动标注来自文献库(蓝)、联网搜索(绿)、还是 AI 推理(紫)
+4. **全流程覆盖** — 从论文上传到章节生成到文档导出，一站式完成
+5. **透明可追溯** — Agent Timeline 实时展示每一步推理过程，用户可审计
+
+### 1.3 成功指标
+
+| 指标 | 目标值 | 衡量方式 |
+|------|--------|----------|
+| 检索准确率 (Recall@20) | ≥ 85% | 标注数据集回归测试 |
+| 引用标注准确率 | ≥ 95% | 人工抽检 100 条 |
+| 首 Token 延迟 (TTFT) | < 3s (P95) | SSE 流式首 token 时间 |
+| 任务完成率 | ≥ 85% | AgentEval 自动统计 |
+| 用户满意度 | ≥ 4.2/5.0 | 反馈评分均值 |
 
 ---
 
-## 2. User Experience & Functionality
+## 2. 目标用户
 
-### 2.1 User Personas
+### 2.1 用户画像
 
-| Persona | 描述 | 核心需求 | 使用频率 |
-|---------|------|----------|----------|
-| **研究生小李** | 研一学生，首次进行系统文献综述 | 快速理解论文要点、生成综述框架、标注引用来源 | 每日 2-3 次 |
-| **博士生张教授** | 领域专家，需要跨论文对比分析 | 知识矩阵提取、多维度对比、数据可视化 | 每周 3-5 次 |
-| **科研助理王姐** | 负责团队文献管理和报告撰写 | 批量论文处理、结构化提取、文档导出 | 每日 5-10 次 |
+| 画像 | 研究生小李 | 博士生张教授 | 科研助理王姐 |
+|------|-----------|-------------|-------------|
+| **身份** | 研一，首次做文献综述 | 领域专家，需要跨论文分析 | 负责团队文献管理和报告 |
+| **场景** | 读 20 篇论文→写综述章节 | 对比 10 篇方法论的异同 | 批量提取结构化信息→Excel |
+| **痛点** | 不知道从哪篇开始读 | 手动对比效率极低 | 复制粘贴到手抽筋 |
+| **频率** | 每日 2-3 次 | 每周 3-5 次 | 每日 5-10 次 |
 
-### 2.2 User Stories & Acceptance Criteria
+### 2.2 核心使用场景
 
-#### US-01: 智能问答与知识检索
-> As a 研究者, I want to 用自然语言提问并获取基于文献库的精准回答 with 来源标注, so that 我无需逐篇翻阅即可获取可信答案.
+**场景 A：文献综述速成**
+> 上传 15 篇相关论文 → 浏览 AI 自动解析的摘要 → 对话式提问"这些论文用了哪些研究方法" → 指令"帮我写文献综述" → 编辑修改 → 导出 Markdown
 
-**Acceptance Criteria:**
-- [ ] 输入问题后 3s 内开始 SSE 流式输出
-- [ ] 回答中包含 `[作者, 年份]` 格式引用标注
-- [ ] 每条引用标注来源类型：`[KB]` 文献库 / `[WEB]` 联网 / `[AI]` 推理
-- [ ] Agent Timeline 右侧面板实时显示 Supervisor → Researcher → Responder 执行链路
-- [ ] 支持多轮对话，10+ 轮上下文不丢失
-- [ ] 混合检索自动执行，用户无需选择检索策略
-- [ ] 联网搜索在文献库覆盖不足时自动触发
+**场景 B：跨论文对比分析**
+> 上传 8 篇对比论文 → 自定义提取字段（方法、数据集、准确率、结论） → AI 批量提取 → 生成对比表格 → 导出 Excel
 
-#### US-02: 文献上传与管理
-> As a 研究者, I want to 批量上传 PDF/DOCX 论文并自动提取元数据和建立检索索引, so that 我能快速建立个人文献库.
+**场景 C：单篇论文精读**
+> 上传一篇难懂的论文 → 提问"第 3 节的算法核心思想是什么" → AI 基于 RAG 给出带引用的解释 → 继续追问细节
 
-**Acceptance Criteria:**
-- [ ] 支持 PDF / DOC / DOCX / MD / TXT 五种格式
-- [ ] 自动提取标题、作者、年份、摘要并展示
-- [ ] 上传进度实时显示进度条
-- [ ] 解析失败时返回明确错误信息并跳过，不阻塞批量流程
-- [ ] 自动完成分层分块 (L0/L1/L2) + Embedding + ChromaDB 存储
-- [ ] 论文列表支持按时间/标题排序和关键词搜索
-- [ ] 单篇删除时同步清理 ChromaDB 向量数据
+---
 
-#### US-03: 论文写作辅助
-> As a 研究者, I want to 基于已读文献自动生成论文各章节初稿 with 引用标注, so that 我能从框架而非空白页开始写作.
+## 3. 功能需求
 
-**Acceptance Criteria:**
-- [ ] 支持生成预设章节：摘要、引言、文献综述、方法论、讨论、结论
-- [ ] 生成内容基于 RAG 检索结果，每段标注引用来源
-- [ ] 支持自然语言修改指令（如 "把第三段改得更学术化"）
-- [ ] 支持子对话模式：点击某一段落进入独立编辑上下文（`/api/chat/sub`）
-- [ ] 编辑内容实时自动保存到后端
-- [ ] 最终文档可合并导出为 Markdown 格式
+### 3.1 功能全景
 
-#### US-04: 跨论文对比分析
-> As a 博士生, I want to 横向对比多篇论文的研究方法和实验结果, so that 我能快速发现研究空白和趋势.
+```
+CiteWise 功能全景
+│
+├── 📁 项目管理
+│   ├── 创建/删除项目（项目是最高组织单元）
+│   └── 项目状态总览（论文数、已提取字段、已完成章节）
+│
+├── 📄 文献管理
+│   ├── 多格式上传（PDF/DOCX/MD/TXT/XLSX）
+│   ├── 自动解析（元数据/章节/表格/图表）
+│   ├── 层级切片入库（摘要级/章节级/段落级）
+│   └── 论文详情查看与删除
+│
+├── 💬 智能对话（核心功能）
+│   ├── 10 种意图自动识别与路由
+│   ├── RAG 混合检索（关键词 + 语义 + 融合 + 重排）
+│   ├── 联网搜索补充（知识库不足时自动触发）
+│   ├── Token 级流式输出（SSE）
+│   ├── 三色来源标注（文献库/联网/AI推理）
+│   ├── Agent Timeline 实时可视化
+│   └── 多轮对话（10+ 轮上下文保持）
+│
+├── ✍️ 章节写作
+│   ├── AI 生成论文章节（引言/综述/方法/讨论/结论）
+│   ├── 自然语言修改（"把第三段改得更学术化"）
+│   ├── 子对话编辑（段落级独立上下文）
+│   └── Markdown 文档导出（含自动参考文献列表）
+│
+├── 📊 结构化提取
+│   ├── 自定义提取字段（最多 10 个）
+│   ├── 批量论文信息提取
+│   └── Excel 导出
+│
+├── 🔍 数据分析
+│   ├── 项目级分析洞察
+│   └── 可视化图表生成
+│
+├── 🧪 评估看板（AgentEval）
+│   ├── 5 大指标追踪（成功率/引用准确率/幻觉率/响应时间/成本）
+│   └── 自动优化建议
+│
+├── 🔑 模型管理
+│   ├── 6+ 供应商支持（智谱/DeepSeek/OpenAI/Moonshot/通义千问/自定义）
+│   └── API Key 验证与管理
+│
+└── 👤 用户系统
+    ├── 注册/登录（JWT 认证）
+    └── 数据隔离
+```
 
-**Acceptance Criteria:**
-- [ ] 支持选择 2-10 篇论文进行矩阵提取
-- [ ] 用户可自定义对比维度（方法、数据集、指标、结论等）
+### 3.2 核心功能详细说明
+
+#### F1: 智能对话系统
+
+**这是 CiteWise 的核心功能。** 用户通过自然语言与 AI 对话，AI 自动理解意图、检索文献库、生成带引用标注的回答。
+
+**意图识别（10 种）**：
+
+| 意图 | 用户会怎么说 | AI 做什么 |
+|------|-------------|-----------|
+| explore | "Transformer 在 NLP 中有哪些应用？" | 检索文献库→生成带引用回答 |
+| summarize | "总结这篇论文的核心贡献" | 检索→生成结构化摘要 |
+| generate | "帮我写文献综述" | 检索→生成论文章节 |
+| modify | "把第三段改得更学术化" | 检索→局部改写 |
+| framework | "帮我规划论文大纲" | 分析文献→推荐框架 |
+| export | "导出所有章节" | 合并章节→生成 Markdown |
+| chart | "画一个方法对比图" | 分析→生成图表配置 |
+| analyze | "分析这些论文的研究趋势" | 分析→生成洞察报告 |
+| websearch | "搜索最新的 RLHF 论文" | 联网搜索→整合回答 |
+| figures | "列出所有图表" | 检索图表元数据 |
+
+**交互体验**：
+- 用户输入后 3 秒内开始流式输出（逐字显示）
+- 右侧 Agent Timeline 面板实时显示当前执行到哪个 Agent
+- 每段回答前标注来源类型：`[KB]` 文献库 / `[WEB]` 联网 / `[AI]` 推理
+
+#### F2: 文献上传与解析
+
+**支持的格式与解析能力**：
+
+| 格式 | 解析方式 | 提取内容 |
+|------|----------|----------|
+| PDF | pdfplumber + Docling (fallback) | 元数据、章节、表格、图表 |
+| DOCX | python-docx | 元数据、段落、表格 |
+| MD/TXT | 文本读取 + 标题解析 | 章节切分 |
+| XLSX | openpyxl | 工作表转 Markdown 表格 |
+
+**分层切片策略**（决定检索精度）：
+
+| 层级 | 粒度 | 大小 | 用途 |
+|------|------|------|------|
+| L0 | 论文级（摘要） | 全文摘要 | 全局概览 |
+| L1 | 章节级 | 500-1500 字 | 上下文理解 |
+| L2 | 段落级 | 200-500 字 | 精准检索 |
+
+#### F3: 混合检索引擎
+
+这是回答质量的关键。采用三阶段检索：
+
+```
+用户查询
+  │
+  ├── ① BM25 关键词检索 (Top-20, jieba 中英混合分词)
+  ├── ② 向量语义检索 (Top-20, embedding-3, 2048 维)
+  │
+  └── ③ RRF 融合 (k=60)
+        │
+        └── ④ LLM 重排序 (候选 ≤10 条时触发, 70% LLM + 30% 向量相似度)
+              │
+              └── 最终 Top-5 + 引用格式化
+```
+
+#### F4: 三色来源标注系统
+
+每段 AI 生成的内容都经过程序化来源判断：
+
+| 标记 | 含义 | 判断依据 |
+|------|------|----------|
+| `[KB]` 蓝色 | 来自文献库 | 段落中的引用匹配到 RAG 检索结果 |
+| `[WEB]` 绿色 | 来自联网搜索 | 段落关键词匹配到 DuckDuckGo 结果 |
+| `[AI]` 紫色 | 来自 AI 推理 | 未匹配到上述任一来源 |
+
+### 3.3 用户故事与验收标准
+
+#### US-01: 智能问答
+> 作为研究者，我希望用自然语言提问并获得基于文献库的精准回答（含来源标注），这样我就不用逐篇翻阅。
+
+- [ ] 输入问题后 3s 内开始流式输出
+- [ ] 回答包含 `[作者, 年份]` 格式引用
+- [ ] 每段标注来源类型 `[KB]`/`[WEB]`/`[AI]`
+- [ ] Agent Timeline 实时显示执行链路
+- [ ] 10+ 轮对话不丢失上下文
+
+#### US-02: 文献上传
+> 作为研究者，我希望批量上传论文并自动解析建索引，这样我能快速建立个人文献库。
+
+- [ ] 支持 PDF/DOC/DOCX/MD/TXT 五种格式
+- [ ] 自动提取标题、作者、年份、摘要
+- [ ] 上传进度实时显示
+- [ ] 解析失败跳过并提示，不阻塞批量流程
+
+#### US-03: 论文写作
+> 作为研究者，我希望 AI 基于文献库自动生成论文各章节初稿（含引用），这样我能从框架开始而非空白页。
+
+- [ ] 支持生成预设章节（摘要/引言/综述/方法/讨论/结论）
+- [ ] 内容基于 RAG 检索，每段标注引用
+- [ ] 支持自然语言修改指令
+- [ ] 支持子对话编辑模式
+- [ ] 最终文档可导出 Markdown
+
+#### US-04: 跨论文对比
+> 作为博士生，我希望横向对比多篇论文的方法和结果，这样我能快速发现研究空白。
+
+- [ ] 支持 2-10 篇论文矩阵提取
+- [ ] 用户可自定义对比维度
 - [ ] 结果以学术风格表格展示
-- [ ] 支持导出 CSV 格式
+- [ ] 支持导出 CSV/Excel
 
-#### US-05: 数据可视化
-> As a 研究者, I want to 以图表形式展示研究趋势和统计数据, so that 我能直观理解文献库的整体情况.
+### 3.4 Non-Goals（明确不做）
 
-**Acceptance Criteria:**
-- [ ] 支持自然语言描述生成图表（如 "展示近五年各方法的准确率趋势"）
-- [ ] 图表基于 D3.js 渲染，支持交互（缩放、悬浮提示）
-- [ ] AgentEval 面板内置趋势柱状图
-
-#### US-06: 模型灵活切换
-> As a 用户, I want to 在不同 LLM 供应商之间切换, so that 我能根据任务和成本选择最合适的模型.
-
-**Acceptance Criteria:**
-- [ ] 支持智谱 / DeepSeek / OpenAI / Moonshot / 千问 / 自定义 6+ 供应商
-- [ ] API Key 保存前自动验证有效性并获取可用模型列表
-- [ ] 切换模型后聊天立即可用新模型
-
-### 2.3 Non-Goals
-
-以下明确 **不在** 当前版本范围内：
-
-- 多用户实时协作编辑（同步/异步）
-- 论文全文翻译功能
+- 多用户实时协作编辑
+- 论文全文翻译
 - LaTeX 格式导出
-- 移动端原生 App（仅桌面 Web）
+- 移动端原生 App
 - 付费订阅和计费系统
-- Zotero / Mendeley 深度集成
-- 本地模型部署支持
+- Zotero / Mendeley 集成
 
 ---
 
-## 3. AI System Requirements
+## 4. 项目架构
 
-### 3.1 Multi-Agent Architecture
-
-#### 3.1.1 编排模型
-
-采用 **LangGraph Supervisor** 模式，声明式 `StateGraph` 定义 Agent 协作流程：
+### 4.1 整体架构图
 
 ```
-用户输入 → [Supervisor] → 意图分类（10 类） → 路由决策
-  ├── explore / websearch → [Researcher] → [Responder]
-  ├── generate / modify / framework → [Researcher] → [Writer]
-  ├── analyze / chart / figures → [Researcher] → [Analyst]
-  ├── summarize → [Researcher] → [Responder]
-  └── export → [Writer]
+┌─────────────────────────────────────────────────────────────────┐
+│                     前端 (Tailwind CSS SPA)                      │
+│                                                                 │
+│   ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌─────────────────┐  │
+│   │ 对话界面  │ │ 文献管理  │ │ 章节编辑  │ │ Agent Timeline  │  │
+│   │ (SSE流式) │ │          │ │          │ │  (实时可视化)    │  │
+│   └─────┬────┘ └─────┬────┘ └─────┬────┘ └───────┬─────────┘  │
+└─────────┼─────────────┼───────────┼──────────────┼─────────────┘
+          │ SSE/REST    │ REST      │ REST         │ SSE
+          ▼             ▼           ▼              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                  FastAPI 后端 (Port 5328)                        │
+│                                                                 │
+│  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐       │
+│  │ Auth │ │Projec│ │Paper │ │ Chat │ │Sectio│ │Extrac│       │
+│  │      │ │ ts   │ │  s   │ │(SSE) │ │ ns   │ │ tion │       │
+│  └──────┘ └──────┘ └──────┘ └───┬──┘ └──────┘ └──────┘       │
+│                                │                                │
+│  ┌─────────────────────────────▼────────────────────────────┐  │
+│  │          LangGraph 多 Agent 编排层 (Supervisor 模式)       │  │
+│  │                                                          │  │
+│  │   [Supervisor] ──→ 意图识别 + 路由                        │  │
+│  │        │                                                 │  │
+│  │        ├─── [Researcher] ──→ RAG 检索 + 联网搜索           │  │
+│  │        │       │                                         │  │
+│  │        │       ├──→ [Responder]  探索/总结/联网问答        │  │
+│  │        │       ├──→ [Writer]     生成/修改/导出章节        │  │
+│  │        │       └──→ [Analyst]    分析/图表/框架推荐        │  │
+│  │        │                                                 │  │
+│  │        └─── [Writer] ──→ 导出 (无需检索)                  │  │
+│  │                                                          │  │
+│  │   状态管理: AgentState (TypedDict, 19 字段)               │  │
+│  │   持久化:   MemorySaver (LangGraph 内置)                  │  │
+│  └──────────────────────┬───────────────────────────────────┘  │
+│                          │                                     │
+│  ┌───────────────────────▼──────────────────────────────────┐  │
+│  │                    检索引擎 (RAG)                          │  │
+│  │                                                          │  │
+│  │   查询 ──→ BM25 (jieba 分词, Top-20)  ──┐                │  │
+│  │        ──→ 向量检索 (ChromaDB, Top-20) ──┤→ RRF 融合      │  │
+│  │        ──→ [可选] DuckDuckGo 联网搜索 ──┘  (k=60)        │  │
+│  │                                         │                 │  │
+│  │                          LLM 重排序 (70%LLM + 30%向量)    │  │
+│  │                          → 最终 Top-5 + 引用格式化        │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                │
+│  ┌───────────────┐ ┌───────────────┐ ┌────────────────────┐   │
+│  │   ChromaDB    │ │    SQLite     │ │   智谱 GLM API     │   │
+│  │  (向量存储)    │ │  (业务数据)    │ │  open.bigmodel.cn  │   │
+│  └───────────────┘ └───────────────┘ └────────────────────┘   │
+└────────────────────────────────────────────────────────────────┘
 ```
 
-**核心实现文件**：
-- `src/core/graph_state.py` — `AgentState` TypedDict 定义
-- `src/core/graph.py` — `StateGraph` 声明式图结构 + `MemorySaver`
-- `src/core/agents/router.py` — Supervisor 意图分类 + 路由
+### 4.2 多 Agent 协作流程
 
-#### 3.1.2 Agent 职责矩阵
-
-| Agent | 职责 | 输入 | 输出 | 模型 | 文件 |
-|-------|------|------|------|------|------|
-| **Supervisor** | 意图分类(10种) + 路由 + 分级模型选择 | 用户消息 + 历史上下文 | 路由指令 + 模型选择 | glm-4-flash | `agents/router.py` |
-| **Researcher** | RAG 混合检索 + 联网搜索 + 上下文组装 | 查询 + 检索参数 | 检索结果 + 来源标注 | glm-4-flash | `agents/researcher.py` |
-| **Responder** | 生成带三源标注的回答 | 检索结果 + 用户问题 | 结构化回答 + `[KB]/[WEB]/[AI]` 标注 | glm-4.7 | `graph.py` (内置节点) |
-| **Writer** | 学术内容生成/修改/导出 | 检索结果 + 写作指令 | 章节内容 + 引用 + 修改摘要 | glm-4.7 | `agents/writer.py` |
-| **Analyst** | 数据分析 + 可视化 + 框架 + 图表索引 | 检索结果 + 分析指令 | 图表配置 + 分析报告 + 图表列表 | glm-4.7 | `agents/analyst.py` |
-
-#### 3.1.3 意图分类体系
-
-| Intent | 描述 | 路由目标 | 模型 | 典型输入 |
-|--------|------|----------|------|----------|
-| `explore` | 探索性知识问答 | Researcher → Responder | glm-4-flash | "Transformer 在 NLP 中有哪些应用？" |
-| `summarize` | 论文/主题摘要 | Researcher → Responder | glm-4-flash | "总结这篇论文的核心贡献" |
-| `generate` | 生成论文章节 | Researcher → Writer | glm-4.7 | "帮我写文献综述" |
-| `modify` | 修改已有内容 | Researcher → Writer | glm-4.7 | "把这段改得更学术化" |
-| `framework` | 生成论文框架 | Researcher → Writer | glm-4.7 | "生成论文大纲" |
-| `export` | 导出文档 | Writer | glm-4-flash | "导出所有章节" |
-| `chart` | 生成图表 | Researcher → Analyst | glm-4.7 | "画一个趋势图" |
-| `analyze` | 深度分析 | Researcher → Analyst | glm-4-flash | "分析这些论文的研究趋势" |
-| `websearch` | 联网搜索 | Researcher → Responder | glm-4-flash | "搜索最新的 RLHF 论文" |
-| `figures` | 图表索引查询 | Researcher → Analyst | glm-4-flash | "列出所有图表" |
-
-### 3.2 RAG Pipeline
-
-#### 3.2.1 文档处理流水线
+CiteWise 的核心是一个基于 LangGraph 的 **声明式状态图**，所有 Agent 共享 `AgentState` 状态对象：
 
 ```
-文件上传 → 格式检测 → 对应解析器
-  ├── PDF → Docling(优先) / pdfplumber(fallback) → 元数据+文本+表格+图表
-  ├── DOCX → python-docx → 段落提取
-  ├── MD/TXT → 直接读取
-  └── XLSX → openpyxl → 表格提取
-         → 分层分块(L0/L1/L2)
-         → Embedding(embedding-3, 2048 维)
-         → ChromaDB 存储
+用户输入
+  │
+  ▼
+[Supervisor 节点]
+  │  RouterAgent 进行意图识别
+  │  策略: LLM 分类 (置信度 ≥0.7) → 关键词匹配 (fallback)
+  │  输出: intent + target_agent
+  │
+  ├── intent == "export" ──────────────────────┐
+  │                                            │
+  └── 其他所有意图                              │
+       │                                      │
+       ▼                                      ▼
+  [Researcher 节点]                      [Writer 节点] → END
+    │  执行 RAG 混合检索
+    │  联网搜索 (websearch 意图时)
+    │  输出: chunks + rag_content + web_results
+    │
+    ├── target_agent == "writer"
+    │       │
+    │       ▼
+    │   [Writer 节点]
+    │     │  生成章节 / 修改内容
+    │     └──→ END
+    │
+    ├── target_agent == "analyst"
+    │       │
+    │       ▼
+    │   [Analyst 节点]
+    │     │  数据分析 / 图表 / 框架
+    │     └──→ END
+    │
+    └── target_agent == "responder"
+            │
+            ▼
+        [Responder 节点]
+          │  生成带引用回答 + 三色标注
+          └──→ END
 ```
 
-**分块策略**（实现：`src/core/rag.py` + `src/core/file_parser.py`）：
+**Agent 职责矩阵**：
 
-| 层级 | 粒度 | 大小 | overlap | 用途 |
-|------|------|------|---------|------|
-| L0 | 文档级 | 全文摘要 | - | 全局概览 |
-| L1 | 章节级 | 500-1500 字 | 10-20% | 上下文理解 |
-| L2 | 段落级 | 200-500 字 | 10-20% | 精准检索 |
+| Agent | 职责 | LLM 模型 | 源文件 |
+|-------|------|----------|--------|
+| **Supervisor** | 意图分类(10种) + 路由 | glm-4-flash | `src/core/agents/router.py` |
+| **Researcher** | RAG 检索 + 联网搜索 | glm-4-flash | `src/core/agents/researcher.py` |
+| **Responder** | 生成带标注的回答 | glm-4.7 | `src/core/graph.py` (内置节点) |
+| **Writer** | 章节生成/修改/导出 | glm-4.7 | `src/core/agents/writer.py` |
+| **Analyst** | 分析/可视化/框架 | glm-4.7 | `src/core/agents/analyst.py` |
 
-#### 3.2.2 混合检索引擎
+**模型分级策略**（成本优化）：
 
-**实现文件**：`src/core/retriever.py`
+- **轻量任务** (分类/检索) → `glm-4-flash`：低延迟、低成本
+- **生成任务** (写作/分析) → `glm-4.7`：高质量、长文本
+- **向量化** → `embedding-3`：2048 维，中英双语
+
+### 4.3 检索引擎架构
 
 ```
-用户查询 → Query 改写
-         → BM25 关键词检索 (Top-20, jieba中英混合分词)  ──┐
-         → 向量语义检索 (Top-20, ChromaDB cosine)     ──┤→ RRF 融合(k=60)
-         → [可选] DuckDuckGo 联网搜索                 ──┘
-         → LLM 重排序 (候选≤10条时触发, 70%LLM+30%向量相似度)
-         → 最终 Top-5 结果 + 引用格式化
+              用户查询
+                │
+    ┌───────────┼───────────┐
+    ▼           ▼           ▼
+  BM25       向量检索     [可选]
+ 关键词匹配  语义相似度   联网搜索
+ (jieba分词) (ChromaDB)  (DuckDuckGo)
+  Top-20     Top-20
+    │           │           │
+    └───────────┼───────────┘
+                ▼
+        RRF 倒数排名融合 (k=60)
+                │
+                ▼
+          候选文档集合
+                │
+        ┌───────┴───────┐
+        │  候选 > 10 条  │  先粗排到 10 条
+        │  候选 ≤ 10 条  │  直接精排
+        └───────┬───────┘
+                ▼
+        LLM 重排序 (70% LLM 打分 + 30% 向量距离)
+                │
+                ▼
+          最终 Top-5 + [作者, 年份] 引用格式化
 ```
 
-| 参数 | 值 | 说明 |
-|------|-----|------|
-| BM25 Top-K | 20 | jieba 中英文混合分词 |
-| Vector Top-K | 20 | ChromaDB 语义相似度 (cosine) |
-| RRF k 参数 | 60 | 倒数排名融合权重 |
-| LLM Rerank 权重 | 70% LLM + 30% Vector | 候选≤10条时触发 |
-| Embedding 维度 | 2048 | embedding-3 模型 |
-| 最终输出 | Top-5 | 带 `[作者, 年份]` 引用格式化 |
+### 4.4 Prompt 工程架构
 
-### 3.3 Prompt Engineering (5 层分层模板)
-
-**实现文件**：`src/core/prompt.py`
+5 层分层模板，由 `PromptEngine` 动态组装：
 
 | 层级 | 内容 | 动态性 | 示例 |
 |------|------|--------|------|
-| Layer 1-2 | 系统基础约束 | 固定 | "强制溯源、禁止幻觉、结构化输出" |
-| Layer 3 | 用户画像 | 半静态 | 研究领域、关注方向、写作风格 |
-| Layer 4 | 项目状态 | 动态 | 文献数量、已提取字段、当前框架 |
-| Layer 5 | 任务 Prompt | 按意图切换 | 提取字段/生成章节/分析对比等 |
+| Layer 1-2 | 系统基础约束 | **固定** | "强制溯源、禁止幻觉、结构化输出" |
+| Layer 3 | 用户画像 | **半静态** | 研究领域、关注方向、写作风格 |
+| Layer 4 | 项目状态 | **动态** | 文献数量、已提取字段、当前框架 |
+| Layer 5 | 任务 Prompt | **按意图切换** | 提取字段/生成章节/分析对比等 8 套模板 |
 
-PromptEngine 类负责动态组装模板，根据意图选择对应的 Layer 5 模板，注入用户画像和项目状态。
+核心约束注入到每个 Prompt：
+1. **强制溯源** — 所有观点必须引用知识库文献 `[作者, 年份]`
+2. **禁止幻觉** — 不得编造论文、数据、方法或结论
+3. **结构化输出** — 按要求格式输出
+4. **忠实原文** — 提取时忠于原文表述
 
-### 3.4 Memory Architecture
+### 4.5 三层记忆架构
 
-三层记忆系统：
+| 层级 | 名称 | 存储 | 持久性 | 内容 | 源文件 |
+|------|------|------|--------|------|--------|
+| Layer 1 | 全局画像 | JSON 文件 | 永久 | 研究偏好、字段模板、写作风格 | `memory.py` GlobalProfile |
+| Layer 2 | 项目记忆 | SQLite (7 张表) | 永久 | 项目/论文/章节/提取/图表/用户/会话 | `memory.py` ProjectMemory |
+| Layer 3 | 工作记忆 | AgentState (内存) | 会话级 | 当前任务/焦点论文/对话历史 (10 轮滑动窗口) | `graph_state.py` |
 
-| 层级 | 存储 | 持久性 | 内容 | 实现类 |
-|------|------|--------|------|--------|
-| **GlobalProfile** | JSON 文件 (`data/user_profile.json`) | 永久 | 用户画像、研究偏好、字段模板、写作风格 | `memory.py` GlobalProfile |
-| **ProjectMemory** | SQLite (`data/db/citewise.db`) | 永久 | 7 张表: projects/papers/extractions/sections/figures/users/sessions+messages | `memory.py` ProjectMemory |
-| **WorkingMemory** | LangGraph AgentState (内存) | 会话级 | 19 字段状态，含当前项目/任务/焦点论文/对话历史(10轮滑动窗口) | `graph_state.py` AgentState |
+**跨项目复用**：GlobalProfile 提供字段模板和写作偏好的跨项目复用，新项目自动继承。
 
-**跨项目复用**：GlobalProfile 提供字段模板和写作偏好的跨项目复用，新项目创建时自动继承。
+### 4.6 数据模型
 
-### 3.4 Evaluation Strategy
-
-#### 3.4.1 AgentEval 评估面板
-
-**实现文件**：`api/routes/eval.py` + `static/js/eval-panel.js`
-
-| 维度 | 指标 | 目标 | 数据来源 |
-|------|------|------|----------|
-| 任务成功率 | 成功任务数 / 总任务数 | >= 85% | 自动统计 |
-| 引用准确率 | 已验证引用数 / 总引用数 | >= 80% | 自动 + 人工 |
-| 幻觉率 | 未验证陈述数 / 总陈述数 | <= 10% | CoVe 验证 |
-| 响应时间 | 平均完成时间 | <= 10s | SSE 时间戳 |
-| 调用成本 | Token 消耗统计 | 监控 | API 响应 |
-
-#### 3.4.2 自动优化规则
-
-| 条件 | 触发动作 |
-|------|----------|
-| 成功率 < 85% | 建议优化路由逻辑和错误处理 |
-| 幻觉率 > 10% | 建议增强 RAG 检索质量，引入 CoVe 验证 |
-| 响应时间 > 10s | 建议优化 LLM 调用链，减少 top_k |
-| 引用准确率 < 80% | 建议改进检索器重排序策略 |
-
-### 3.5 CoVe (Chain-of-Verification) 验证系统
-
-**实现文件**：`src/core/cove.py`
-
-四步验证流程：
-1. **声明提取** — 从生成内容中提取可验证的事实性声明（claims）
-2. **问题生成** — 为每个声明生成验证问题
-3. **交叉验证** — 用 RAG 检索 + LLM 回答验证问题
-4. **置信度评分** — 对比原始声明与验证结果，标记置信度
-
-输出：
-- 整体置信度分数 (0-1)
-- 逐条声明验证结果：verified / contradicted / unverifiable
-- 矛盾声明高亮标记
-
-### 3.6 知识图谱与推荐系统
-
-**实现文件**：`src/core/recommender.py` + `api/routes/knowledge_map.py` + `api/routes/recommendations.py`
-
-| 功能 | 描述 | API |
-|------|------|-----|
-| 引用关系图 | 基于论文间引用关系构建知识图谱 | `/api/knowledge-map` |
-| 相似度推荐 | 基于向量相似度的论文推荐 | `/api/recommendations` |
-| D3.js 可视化 | 前端交互式图谱展示 | 前端内置 |
-
-### 3.7 Model Configuration
-
-| 用途 | 模型 | 原因 | 成本级别 |
-|------|------|------|----------|
-| 意图分类 (Supervisor) | glm-4-flash | 低延迟、高准确 | 低 |
-| 检索 & 上下文组装 (Researcher) | glm-4-flash | 大量调用、成本控制 | 低 |
-| 最终回答生成 (Responder) | glm-4.7 | 高质量、长文本 | 高 |
-| 内容修改 & 导出 (Writer) | glm-4.7 | 理解复杂修改指令 | 高 |
-| 分析 & 可视化 (Analyst) | glm-4.7 | 结构化输出质量 | 高 |
-| Embedding | embedding-3 | 2048 维，中英双语 | 低 |
-
----
-
-## 4. Technical Specifications
-
-### 4.1 Architecture Overview
+#### SQLite 表结构 (7 张表)
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                    Frontend (Tailwind CSS SPA)                │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌────────────────┐  │
-│  │ Chat View│ │ Paper Mgmt│ │ Section  │ │ Agent Timeline │  │
-│  │ (SSE)    │ │          │ │ Editor   │ │ (可视化)       │  │
-│  └────┬─────┘ └────┬─────┘ └────┬─────┘ └──────┬─────────┘  │
-└───────┼─────────────┼────────────┼──────────────┼────────────┘
-        │ SSE/REST    │ REST       │ REST         │ SSE
-        ▼             ▼            ▼              ▼
-┌──────────────────────────────────────────────────────────────┐
-│                 FastAPI Backend (Port 5328)                   │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌────────────────┐  │
-│  │ Chat API │ │ Paper API│ │ Project  │ │ Eval API       │  │
-│  │ /api/chat│ │ /api/... │ │ API      │ │ /api/eval      │  │
-│  └────┬─────┘ └────┬─────┘ └────┬─────┘ └────────────────┘  │
-│       │             │            │                            │
-│  ┌────┴─────────────┴────────────┴──────────────────────┐    │
-│  │           LangGraph Supervisor StateGraph             │    │
-│  │  [Supervisor] → [Researcher] → [Responder/Writer/    │    │
-│  │                                 Analyst]              │    │
-│  └────────┬────────────┬────────────────────────────────┘    │
-│           │            │                                      │
-│  ┌────────┴──┐  ┌──────┴──────┐  ┌────────────────────┐     │
-│  │ ChromaDB  │  │   SQLite    │  │ 智谱 GLM API       │     │
-│  │ (向量库)  │  │ (项目数据库)│  │ open.bigmodel.cn   │     │
-│  └───────────┘  └─────────────┘  └────────────────────┘     │
-└──────────────────────────────────────────────────────────────┘
+projects ──┬── papers ──── figures
+           │              extractions
+           ├── generated_sections
+           ├── chat_sessions ──── chat_messages
+           └── users
 ```
 
-### 4.2 API Specification
+| 表 | 主键 | 核心字段 | 说明 |
+|----|------|----------|------|
+| projects | `proj_{uuid8}` | name, topic, status | 项目是最高组织单元 |
+| papers | `paper_{uuid8}` | title, authors, year, chunk_count, sections_json | 论文元数据 + 全文 |
+| figures | `fig_{uuid8}` | paper_id, page, caption, context_before/after | 图表元数据 |
+| generated_sections | `sec_{uuid8}` | project_id, section_name, content, citations | AI 生成章节 |
+| extractions | `ext_{uuid8}` | paper_id, template_name, fields, confidence | 结构化提取结果 |
+| users | `user_{uuid8}` | username, password_hash, api_key | 用户信息 |
+| chat_sessions / chat_messages | `sess_{uuid8}` / `msg_{uuid8}` | session_id, role, content, intent | 对话历史 |
 
-#### 4.2.1 Chat API
-
-| Endpoint | Method | 描述 | 流式 |
-|----------|--------|------|------|
-| `/api/chat` | POST | 主对话（SSE 流式） | Yes |
-| `/api/chat/sub` | POST | 子对话（段落编辑） | Yes |
-| `/api/sessions` | GET | 获取会话列表 | No |
-| `/api/sessions/{id}` | DELETE | 删除会话 | No |
-| `/api/sessions/{id}/messages` | GET | 获取会话消息历史 | No |
-
-**Chat Request Schema:**
-```json
-{
-  "message": "string (required, max 2000 chars)",
-  "project_id": "string (required)",
-  "session_id": "string (optional)",
-  "intent": "string (optional, auto-detected)"
-}
-```
-
-**SSE Event Types:**
-```
-event: agent_start    → {agent: "Researcher", timestamp: "..."}
-event: token          → {content: "文本片段"}
-event: agent_end      → {agent: "Responder", duration_ms: 1234}
-event: sources        → {sources: [{type: "KB", title: "...", authors: "..."}]}
-event: done           → 对话完成
-event: error          → {message: "错误描述"}
-```
-
-#### 4.2.2 Project API
-
-| Endpoint | Method | 描述 |
-|----------|--------|------|
-| `/api/projects` | POST | 创建项目 |
-| `/api/projects` | GET | 获取项目列表 |
-| `/api/projects/{id}` | GET / PUT / DELETE | 项目 CRUD |
-
-#### 4.2.3 Paper API
-
-| Endpoint | Method | 描述 |
-|----------|--------|------|
-| `/api/papers/upload` | POST | 上传论文（multipart/form-data） |
-| `/api/papers` | GET | 获取论文列表 |
-| `/api/papers/{id}` | GET / DELETE | 论文详情 / 删除 |
-| `/api/papers/{id}/chunks` | GET | 查看论文分块详情 |
-
-#### 4.2.4 Search & Analysis API
-
-| Endpoint | Method | 描述 |
-|----------|--------|------|
-| `/api/search/hybrid` | POST | 混合检索（BM25 + Vector + RRF） |
-| `/api/extraction/extract` | POST | 结构化提取 |
-| `/api/extract/matrix` | POST | 跨论文矩阵提取 |
-
-#### 4.2.5 Auth & Config API
-
-| Endpoint | Method | 描述 |
-|----------|--------|------|
-| `/api/auth/register` | POST | 用户注册 |
-| `/api/auth/login` | POST | 用户登录（JWT） |
-| `/api/config/providers` | GET / POST | LLM 供应商管理 |
-| `/api/config/api-keys` | POST / DELETE | API Key 管理 |
-
-### 4.3 Data Models
-
-#### 4.3.1 SQLite Schema
-
-```sql
--- 项目表
-CREATE TABLE projects (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    description TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- 会话表
-CREATE TABLE sessions (
-    id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    title TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- 消息表
-CREATE TABLE messages (
-    id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-    role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
-    content TEXT NOT NULL,
-    intent TEXT,
-    sources TEXT,          -- JSON: [{type, title, authors, year, ...}]
-    agent_events TEXT,     -- JSON: [{agent, status, duration_ms, ...}]
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- 论文表
-CREATE TABLE papers (
-    id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    title TEXT,
-    authors TEXT,
-    year INTEGER,
-    abstract TEXT,
-    file_path TEXT NOT NULL,
-    upload_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    chunk_count INTEGER DEFAULT 0
-);
-
--- 章节表
-CREATE TABLE sections (
-    id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    session_id TEXT REFERENCES sessions(id),
-    section_type TEXT,     -- abstract/intro/literature_review/method/discussion/conclusion
-    title TEXT,
-    content TEXT,
-    order_index INTEGER,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- 评估表
-CREATE TABLE eval_records (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT,
-    intent TEXT,
-    success BOOLEAN,
-    citation_count INTEGER DEFAULT 0,
-    verified_citations INTEGER DEFAULT 0,
-    hallucination_count INTEGER DEFAULT 0,
-    response_time_ms INTEGER,
-    token_count INTEGER,
-    user_rating INTEGER CHECK(user_rating BETWEEN 1 AND 5),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-#### 4.3.2 ChromaDB Collections
+#### ChromaDB 向量库
 
 ```
 Collection: paper_chunks
 ├── id: chunk_uuid (string)
 ├── embedding: float[2048] (embedding-3)
-├── document: chunk_text (string)
-└── metadata:
-    ├── paper_id: string
-    ├── title: string
-    ├── authors: string
-    ├── year: int
-    ├── section_level: "L0" | "L1" | "L2"
-    ├── section_title: string
-    ├── page_num: int
-    └── chunk_index: int
+├── document: chunk_text
+└── metadata: { paper_id, title, authors, year, section_level: L0/L1/L2, section_title, page_num }
 ```
 
-### 4.4 Frontend Architecture
+### 4.7 API 设计
 
-#### 4.4.1 Component Structure
+| 模块 | 端点数 | 核心接口 |
+|------|--------|----------|
+| 认证 | 3 | `POST /api/auth/register`, `POST /api/auth/login`, `GET /api/auth/me` |
+| 项目 | 4 | `GET/POST /api/projects`, `GET /api/projects/{id}/state`, `DELETE /api/projects/{id}` |
+| 论文 | 5 | `POST /api/papers/upload`, `GET /api/papers`, `GET/DELETE /api/papers/{id}` |
+| 对话 | 2 | `POST /api/chat` (SSE 流式), `POST /api/chat/sub` (子对话) |
+| 章节 | 5 | `GET/POST/PUT/DELETE /api/sections`, `GET /api/sections/export` |
+| 提取 | 4 | `GET/POST /api/fields`, `POST /api/extraction`, `GET /api/extraction/export` |
+| 搜索 | 1 | `POST /api/search` |
+| API Key | 4 | `GET /api/apikeys/providers`, `POST /api/apikeys/verify`, `POST /api/apikeys/save` |
+| 评估 | 3 | `GET /api/eval/metrics`, `GET /api/eval/trends`, `POST /api/eval/rate` |
+| 知识图谱 | 1 | `GET /api/knowledge-map` |
+| 推荐 | 1 | `GET /api/recommendations` |
+
+**SSE 流式事件类型**：
 
 ```
+event: agent_start   → {agent: "Researcher", timestamp: "..."}
+event: token         → {content: "文本片段"}
+event: agent_end     → {agent: "Responder", duration_ms: 1234}
+event: sources       → {sources: [{type: "KB", title: "...", authors: "..."}]}
+event: done          → 对话完成
+event: error         → {message: "错误描述"}
+```
+
+### 4.8 前端架构
+
 ```
 static/
-├── index.html              -- SPA 入口 (Tailwind CDN, 1105 行)
-├── css/
-│   └── tailwind.css        -- Tailwind CSS (空，使用 CDN)
+├── index.html           SPA 入口 (1173 行, Tailwind CDN)
 ├── js/
-│   └── app.js              -- 主应用逻辑 (2410 行单体文件)
-│                              包含：路由/状态管理/对话/SSE/论文管理/章节编辑/Timeline
-├── vendor/
-│   ├── animate.min.css     -- 动画库
-│   ├── lucide.min.js       -- 图标库
-│   └── tailwindcss.js      -- Tailwind 本地 fallback
-└── data/                   -- 运行时数据
-```
+│   └── app.js           主应用逻辑 (2711 行, 含路由/状态/对话/SSE/论文管理/章节)
+├── css/
+├── vendor/              第三方库 (animate.css, lucide icons, tailwind fallback)
+└── html/                页面模板
 ```
 
-#### 4.4.2 Frontend Performance Targets
+**核心交互**：
+- SSE `EventSource` 接收流式 Token → 实时渲染聊天气泡
+- 右侧 Agent Timeline 面板 → 显示 `agent_start`/`agent_end` 事件
+- 侧边栏 → 项目/论文/章节管理 + 模型选择器
 
-| 指标 | 目标 | 衡量方式 |
-|------|------|----------|
-| FCP | < 1.5s | Lighthouse |
-| LCP | < 2.5s | Lighthouse |
-| CLS | < 0.1 | Lighthouse |
-| JS Bundle (gzip) | < 200KB | 构建产物 |
-| SSE 首 token | < 500ms | 网络面板 |
+### 4.9 目录结构
 
-### 4.5 Security & Privacy
-
-#### 4.5.1 数据安全措施
-
-| 措施 | 实现方式 |
-|------|----------|
-| API Key 管理 | `.env` 环境变量 / 前端 localStorage，不入库 |
-| 文件上传限制 | 单文件 50MB 上限，白名单格式校验 |
-| Rate Limiting | 30 请求/分钟/IP（内存级，FastAPI middleware） |
-| 输入验证 | Pydantic schema 校验所有 API 入参 |
-| XSS 防护 | 前端内容渲染转义 |
-| SQL 注入 | ORM 参数化查询 |
-| 安全头 | `X-Content-Type-Options` / `X-Frame-Options` / `Referrer-Policy` |
-| 用户数据隔离 | JWT Token + user_id 过滤 |
-
-#### 4.5.2 隐私合规
-
-- 用户论文数据本地存储，不上传至第三方 LLM
-- LLM 调用仅传输检索结果片段和用户输入，不传输论文全文
-- 会话数据仅保留在本地 SQLite，用户可随时删除
-- 不收集任何用户行为追踪数据
-
-### 4.6 Integration Points
-
-| 集成 | 协议 | 用途 | 配置 |
-|------|------|------|------|
-| 智谱 GLM API | HTTPS REST | LLM 推理 | `OPENAI_BASE_URL=open.bigmodel.cn` |
-| 智谱 Embedding API | HTTPS REST | 文本向量化 | `EMBEDDING_MODEL=embedding-3` |
-| ChromaDB | 本地进程 | 向量存储和 ANN 检索 | `data/db/chroma` |
-| DuckDuckGo API | HTTPS | 联网搜索补充 | 自动触发 |
-| SQLite | 本地文件 | 结构化数据持久化 | `data/db/citewise.db` |
-| D3.js | CDN | 数据可视化 | 前端内联 |
+```
+CiteWise/
+├── run.py                         # 启动入口 (uvicorn, port=5328)
+├── requirements.txt               # Python 依赖
+├── Dockerfile                     # Docker 容器化
+├── render.yaml                    # Render 云部署配置
+│
+├── api/                           # API 层
+│   ├── main.py                    # FastAPI 入口 + 中间件 + 生命周期
+│   ├── schemas.py                 # Pydantic 请求/响应模型
+│   └── routes/                    # 路由模块 (13 个文件)
+│       ├── auth.py                # 认证 (JWT)
+│       ├── chat.py                # 对话 (SSE 流式)
+│       ├── papers.py              # 论文管理
+│       ├── sections.py            # 章节管理
+│       ├── extraction.py          # 结构化提取
+│       ├── knowledge_map.py       # 知识图谱
+│       ├── recommendations.py     # 文献推荐
+│       └── ...
+│
+├── src/                           # 核心业务层
+│   ├── core/
+│   │   ├── graph.py               # LangGraph StateGraph (367 行)
+│   │   ├── async_graph.py         # 异步流式图 (464 行)
+│   │   ├── graph_state.py         # AgentState TypedDict (19 字段)
+│   │   ├── agents/
+│   │   │   ├── router.py          # Supervisor 意图路由 (163 行)
+│   │   │   ├── researcher.py      # RAG 检索 Agent
+│   │   │   ├── writer.py          # 写作 Agent (152 行)
+│   │   │   ├── analyst.py         # 分析 Agent (153 行)
+│   │   │   ├── coordinator.py     # 兼容层
+│   │   │   └── base.py            # Agent 基类
+│   │   ├── retriever.py           # 混合检索引擎 (257 行)
+│   │   ├── rag.py                 # PDF 解析 + 层级切片 (631 行)
+│   │   ├── file_parser.py         # 统一文件解析器 (282 行)
+│   │   ├── advanced_parser.py     # Docling 高级解析 (216 行)
+│   │   ├── embedding.py           # Embedding + ChromaDB (185 行)
+│   │   ├── llm.py                 # LLM 客户端封装 (180 行)
+│   │   ├── prompt.py              # 5 层 Prompt 模板 (281 行)
+│   │   ├── memory.py              # 三层记忆系统 (563 行)
+│   │   ├── source_annotation.py   # 三色来源标注 (121 行)
+│   │   ├── cove.py                # CoVe 验证 (287 行)
+│   │   └── recommender.py         # 论文推荐 (190 行)
+│   ├── tools/
+│   │   └── web_search.py          # DuckDuckGo 搜索 (78 行)
+│   └── eval/
+│       ├── metrics.py             # AgentEval 5 大指标 (181 行)
+│       ├── dashboard.py           # 评估 API (54 行)
+│       └── ab_test.py             # A/B 测试框架 (120 行)
+│
+├── config/
+│   └── settings.py                # 环境变量 + 路径 + 参数集中配置
+│
+├── static/                        # 前端 SPA
+│   ├── index.html                 # 主页面 (1173 行)
+│   └── js/app.js                  # 完整前端逻辑 (2711 行)
+│
+├── data/                          # 数据目录 (gitignored)
+│   ├── papers/                    # 上传的论文文件
+│   ├── figures/                   # 提取的图表
+│   └── db/
+│       ├── citewise.db            # SQLite 主数据库
+│       ├── eval.db                # 评估数据库
+│       └── chroma/                # ChromaDB 向量库
+│
+└── docs/                          # 技术设计文档
+```
 
 ---
 
-## 5. Risks & Roadmap
+## 5. 技术选型
 
-### 5.1 Technical Risks
+| 层级 | 技术 | 选型理由 |
+|------|------|----------|
+| **后端框架** | FastAPI | 异步原生、自动 API 文档、SSE 支持 |
+| **Agent 编排** | LangGraph (StateGraph) | 声明式状态图、Supervisor 模式、MemorySaver |
+| **LLM** | 智谱 GLM-4.7 / glm-4-flash | 中英双语优秀、分级模型降低成本 |
+| **Embedding** | 智谱 embedding-3 (2048 维) | 与 LLM 同生态、中英双语 |
+| **向量库** | ChromaDB | 轻量级、本地部署、无需额外服务 |
+| **关系数据库** | SQLite (WAL 模式) | 零配置、单文件、适合单机部署 |
+| **PDF 解析** | pdfplumber + Docling | pdfplumber 稳定、Docling 高级 fallback |
+| **中文分词** | jieba | 中英文混合分词、BM25 检索基础 |
+| **前端** | Vanilla JS + Tailwind CSS CDN | 无构建工具、快速迭代 |
+| **容器化** | Docker + Render | 一键部署、免费层可用 |
 
-| 风险 | 概率 | 影响 | 缓解策略 |
-|------|------|------|----------|
-| 智谱 API 不可用/限流 | 中 | 高 | 降级到 glm-4-flash；本地缓存常见查询结果 |
-| 大文件 PDF 解析超时 | 中 | 中 | 异步处理 + 进度通知；50MB 硬限制 |
-| 向量库性能瓶颈 | 低 | 中 | 分片索引；定期优化；增量更新 |
-| 长对话上下文溢出 | 中 | 中 | 自动摘要压缩；滑动窗口；会话拆分 |
-| BM25 中文分词不准 | 低 | 低 | 自定义词典；jieba 优化加载 |
+**关键配置参数**：
+
+| 参数 | 值 | 含义 |
+|------|-----|------|
+| 端口 | 5328 | 避开 Sangfor VPN 代理的 10000 端口 |
+| VECTOR_TOP_K | 20 | 向量检索候选数 |
+| BM25_TOP_K | 20 | 关键词检索候选数 |
+| RERANK_TOP_K | 5 | 最终输出结果数 |
+| RRF_K | 60 | RRF 融合常数 |
+| CHUNK_TARGET_SIZE | 800 字符 | 目标分块大小 |
+| Rate Limit | 30 req/min/IP | 接口限流 |
+
+---
+
+## 6. 安全设计
+
+| 措施 | 实现 |
+|------|------|
+| 认证 | JWT (HMAC-SHA256), 72h 有效期 |
+| 密码存储 | PBKDF2-HMAC-SHA256, 200K 次迭代 + 随机盐 |
+| 数据隔离 | 项目级隔离 + user_id 过滤 |
+| API Key 管理 | 不入库，localStorage / .env 存储 |
+| 输入验证 | Pydantic schema 校验所有 API 入参 |
+| 文件上传 | 白名单格式 + 50MB 限制 |
+| 限流 | 30 请求/分钟/IP |
+| 安全头 | X-Content-Type-Options / X-Frame-Options / Referrer-Policy |
+| CORS 白名单 | localhost / vercel.app / onrender.com |
+| 隐私 | 论文数据本地存储，不传全文到 LLM |
+
+---
+
+## 7. 风险与 Roadmap
+
+### 7.1 技术风险
+
+| 风险 | 概率 | 影响 | 应对 |
+|------|------|------|------|
+| 智谱 API 不可用/限流 | 中 | 高 | 降级到 glm-4-flash；缓存常见查询 |
+| 大 PDF 解析超时 | 中 | 中 | 异步处理 + 进度通知；50MB 硬限制 |
+| 长对话上下文溢出 | 中 | 中 | 自动摘要压缩；10 轮滑动窗口 |
 | LangGraph Breaking Changes | 中 | 中 | 锁定依赖版本；关注 Release Notes |
 
-### 5.2 Phased Roadmap
+### 7.2 版本历史
 
-#### V1.0 — MVP ✅ (已完成)
+| 版本 | 状态 | 核心能力 |
+|------|------|----------|
+| V1.0 MVP | ✅ 完成 | 单 Agent 对话 + PDF 上传 + 基础检索 |
+| V2.0 多 Agent | ✅ 完成 | LangGraph Supervisor + 4 Agent + 章节管理 |
+| V3.0 生产级 | ✅ 完成 | SSE 流式 + Timeline + 三色标注 + AgentEval + 多供应商 |
+| V3.1 稳定性 | ✅ 完成 | SSE 兼容修复 + 模型选择器重构 + E2E 测试 |
+| V3.2 当前版 | ✅ 完成 | 异步流式 + CoVe 验证 + Docling 解析 + 知识图谱 + 推荐 |
 
-- 单 Agent 对话
-- PDF 上传和解析
-- 基础向量检索
-- 简单问答
+### 7.3 下一步
 
-#### V2.0 — 多 Agent 架构 ✅ (已完成)
-
-- LangGraph Supervisor 模式
-- 4 个专业 Agent（Router/Researcher/Writer/Analyst）
-- 章节生成和管理
-- 前端 SPA 重构
-
-#### V3.0 — 生产级系统 ✅ (已完成)
-
-- Token 级 SSE 流式输出
-- Agent 时间线可视化
-- 三源标注系统 ([KB]/[WEB]/[AI])
-- Skill 和工具箱
-- AgentEval 评估面板
-- 多供应商 API Key 管理
-- 用户认证系统（JWT）
-
-#### V3.1 — 稳定性增强 ✅ (已完成)
-
-- SSE CRLF 兼容解析修复
-- 模型选择器 UI 重构（向上展开）
-- 自动创建默认项目
-- 端口冲突修复（5328 替代 10000）
-- Playwright E2E 测试套件
-
-#### V3.2 — 当前版本 🔄
-
-| 特性 | 优先级 | 状态 |
-|------|--------|------|
-| 异步 LLM 流式优化 | P0 | ✅ 已完成 (`async_graph.py`) |
-| CoVe (Chain-of-Verification) 验证系统 | P1 | ✅ 已完成 (`src/core/cove.py`) |
-| 高级 PDF 解析（Docling + 表格/图表提取） | P1 | ✅ 已完成 (`advanced_parser.py` + `file_parser.py`) |
-| 多轮对话上下文管理优化 | P1 | ✅ 已完成 (10 轮滑动窗口) |
-| 知识图谱可视化 (D3.js) | P1 | ✅ 已完成 (`api/routes/knowledge_map.py`) |
-| 文献推荐系统 | P1 | ✅ 已完成 (`src/core/recommender.py`) |
-| A/B 测试框架 | P2 | ✅ 已完成 (`src/eval/ab_test.py`) |
-| 多格式文件解析 (DOCX/MD/TXT/XLSX) | P2 | ✅ 已完成 (`file_parser.py`) |
-| 部署优化（Docker + Render） | P2 | 规划中 |
-| 面试 Demo 脚本 | P1 | 规划中 |
-
-#### V4.0 — 高级能力 📋 (规划中)
-
-| 特性 | 优先级 | 描述 |
-|------|--------|------|
-| 多用户协作 | P0 | 注册/登录、权限管理、团队共享 |
-| Zotero 集成 | P1 | 导入 Zotero 文献库、双向同步 |
-| LaTeX 导出 | P1 | 支持导出 LaTeX 格式论文 |
-| 实时协作编辑 | P2 | 多人同时编辑、评论和批注 |
-| 移动端适配 | P2 | 响应式 PWA |
-| 多 LLM 支持 | P2 | OpenAI / Claude / 本地模型自由切换 |
-| 插件市场 | P3 | 社区 Skill 分享和安装 |
-
-### 5.3 Dependencies
-
-| 依赖 | 版本要求 | 风险级别 | 说明 |
-|------|----------|----------|------|
-| Python | >= 3.10 | 低 | 稳定 |
-| FastAPI | >= 0.104 | 低 | 稳定 |
-| LangGraph | >= 0.0.40 | **中** | 快速迭代，关注 Breaking Changes |
-| ChromaDB | >= 0.4.0 | 低 | 稳定 |
-| 智谱 GLM API | glm-4.7 / glm-4-flash | **中** | 第三方依赖，需监控可用性 |
-| jieba | >= 0.42 | 低 | 中文分词 |
-| D3.js | v7 | 低 | 前端可视化 |
-| pdfplumber / PyPDF2 | latest | 低 | PDF 解析 |
+| 优先级 | 任务 | 状态 |
+|--------|------|------|
+| P1 | 部署上线 (Render) | 规划中 |
+| P1 | 面试 Demo 脚本 | 规划中 |
+| P2 | Docker + Render 部署优化 | 规划中 |
 
 ---
 
-## Appendix
-
-### A. Key File Reference
-
-| 文件 | 路径 | 职责 |
-|------|------|------|
-| 入口 | `run.py` | 服务启动 (port=5328) |
-| API 主路由 | `api/main.py` | FastAPI app + 中间件 + 生命周期 |
-| 聊天路由 | `api/routes/chat.py` | SSE 流式对话 + `astream_events` |
-| Agent 图定义 | `src/core/graph.py` | LangGraph `StateGraph` + `MemorySaver` |
-| 异步图定义 | `src/core/async_graph.py` | 异步图 + 直接 SSE 流式输出 |
-| Agent 状态 | `src/core/graph_state.py` | `AgentState` TypedDict (19字段) |
-| Supervisor | `src/core/agents/router.py` | 意图分类(10种) + 路由 + 分级模型选择 |
-| Researcher | `src/core/agents/researcher.py` | RAG 检索 + 联网搜索 |
-| Responder | `src/core/graph.py` (responder_node) | 生成带引用回答 (内嵌节点) |
-| Writer | `src/core/agents/writer.py` | 内容生成 / 修改 / 导出 |
-| Analyst | `src/core/agents/analyst.py` | 分析 / 可视化 / 框架 |
-| 兼容层 | `src/core/agents/coordinator.py` | graph.invoke 兼容包装 |
-| 检索器 | `src/core/retriever.py` | BM25 + Vector + RRF 融合 + LLM 重排序 |
-| PDF 解析 | `src/core/rag.py` | PDF 分层分块 (L0/L1/L2) + 语义切块 |
-| 文件解析 | `src/core/file_parser.py` | 统一解析器: PDF/DOCX/MD/TXT/XLSX |
-| 高级解析 | `src/core/advanced_parser.py` | Docling PDF 解析 + fallback |
-| Prompt 引擎 | `src/core/prompt.py` | 5 层分层 Prompt 模板 + PromptEngine |
-| 记忆系统 | `src/core/memory.py` | 三层记忆: GlobalProfile/ProjectMemory/WorkingMemory |
-| 来源标注 | `src/core/source_annotation.py` | [KB]/[WEB]/[AI] 程序化标注 |
-| CoVe 验证 | `src/core/cove.py` | Chain-of-Verification 事实核查 |
-| 推荐 | `src/core/recommender.py` | 论文相似度 + 引用推荐 |
-| Embedding | `src/core/embedding.py` | embedding-3 + ChromaDB VectorStore |
-| 评估系统 | `src/eval/metrics.py` | AgentEval 5 大指标 + SQLite |
-| 评估面板 | `src/eval/dashboard.py` | 评估 API (/eval/metrics, /eval/trends) |
-| A/B 测试 | `src/eval/ab_test.py` | A/B 测试框架 |
-| 联网搜索 | `src/tools/web_search.py` | DuckDuckGo 搜索 + LLM 摘要 |
-| 前端入口 | `static/index.html` | SPA 主页面 (1105行, Tailwind CDN) |
-| 前端主逻辑 | `static/js/app.js` | 完整前端逻辑 (2410行单体) |
-| 配置 | `config/settings.py` | 环境变量 + 路径 + 参数集中配置 |
-
-### B. Environment Configuration
+## 附录 A: 环境配置
 
 ```env
-# LLM Configuration
+# LLM
 OPENAI_API_KEY=your_zhipu_api_key
-OPENAI_BASE_URL=https://open.bigmodel.cn/api/paas/v4
+OPENAI_BASE_URL=https://open.bigmodel.cn/api/paas/v4/
 LLM_MODEL=glm-4.7
-LLM_MODEL_LIGHT=glm-4-flash
+
+# Embedding
 EMBEDDING_MODEL=embedding-3
+EMBEDDING_DIMENSION=2048
 
 # Server
 PORT=5328
 HOST=0.0.0.0
-
-# Data Paths
-DATA_DIR=./data
-PAPERS_DIR=./data/papers
-DB_DIR=./data/db
 ```
 
-### C. Startup Commands
+## 附录 B: 启动命令
 
 ```bash
-# 启动服务
 cd C:/Users/77230/CiteWise && python run.py
-
-# 访问地址
-http://localhost:5328
+# 访问 http://localhost:5328
 ```
 
-### D. Glossary
+## 附录 C: 术语表
 
 | 术语 | 定义 |
 |------|------|
@@ -726,7 +680,6 @@ http://localhost:5328
 | SSE | Server-Sent Events，服务器推送事件 |
 | TTFT | Time To First Token，首 token 延迟 |
 | CoVe | Chain of Verification，验证链 |
-| SPA | Single Page Application，单页应用 |
-| Supervisor | 监督者 Agent，负责意图分类和 Agent 路由 |
+| Supervisor | 监督者 Agent，负责意图分类和路由 |
 | AgentEval | 内置 Agent 评估系统 |
 | L0/L1/L2 | 文档分层分块的三个粒度级别 |

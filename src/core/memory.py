@@ -180,6 +180,31 @@ class ProjectMemory:
                 );
                 CREATE INDEX IF NOT EXISTS idx_chat_session ON chat_messages(session_id);
                 CREATE INDEX IF NOT EXISTS idx_chat_project ON chat_messages(project_id);
+
+                CREATE TABLE IF NOT EXISTS quick_notes (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    source_url TEXT DEFAULT '',
+                    note_type TEXT DEFAULT 'general',
+                    status TEXT DEFAULT 'note',
+                    linked_paper_ids TEXT DEFAULT '[]',
+                    pinned INTEGER DEFAULT 0,
+                    sort_order INTEGER DEFAULT 0,
+                    created_at TEXT DEFAULT (datetime('now')),
+                    updated_at TEXT DEFAULT (datetime('now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_notes_project ON quick_notes(project_id);
+
+                CREATE TABLE IF NOT EXISTS note_types (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    color TEXT DEFAULT 'slate',
+                    sort_order INTEGER DEFAULT 0,
+                    created_at TEXT DEFAULT (datetime('now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_note_types_project ON note_types(project_id);
             """)
             # Migration: add columns if they don't exist (SQLite ALTER TABLE)
             try:
@@ -204,6 +229,14 @@ class ProjectMemory:
                 pass
             try:
                 conn.execute("ALTER TABLE users ADD COLUMN password_salt TEXT DEFAULT ''")
+            except Exception:
+                pass
+            try:
+                conn.execute("ALTER TABLE quick_notes ADD COLUMN pinned INTEGER DEFAULT 0")
+            except Exception:
+                pass
+            try:
+                conn.execute("ALTER TABLE quick_notes ADD COLUMN sort_order INTEGER DEFAULT 0")
             except Exception:
                 pass
             conn.commit()
@@ -285,6 +318,12 @@ class ProjectMemory:
             row = conn.execute("SELECT COUNT(*) as cnt FROM papers WHERE project_id=?",
                                (project_id,)).fetchone()
         return row["cnt"] if row else 0
+
+    def update_paper_title(self, paper_id: str, title: str):
+        """Update a paper's title"""
+        with self._get_conn() as conn:
+            conn.execute("UPDATE papers SET title=? WHERE id=?", (title, paper_id))
+            conn.commit()
 
     # --- 提取结果 ---
     def save_extraction(self, project_id: str, paper_id: str,
@@ -405,6 +444,216 @@ class ProjectMemory:
         with self._get_conn() as conn:
             rows = conn.execute("SELECT * FROM figures WHERE project_id=? ORDER BY page", (project_id,)).fetchall()
         return [dict(r) for r in rows]
+
+    # --- 随手记管理 ---
+    def add_note(self, project_id: str, content: str, source_url: str = "",
+                 note_type: str = "general") -> str:
+        nid = f"note_{uuid.uuid4().hex[:8]}"
+        with self._get_conn() as conn:
+            conn.execute(
+                "INSERT INTO quick_notes (id, project_id, content, source_url, note_type) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (nid, project_id, content, source_url, note_type)
+            )
+            conn.commit()
+        return nid
+
+
+    def get_note(self, note_id: str) -> Optional[dict]:
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT * FROM quick_notes WHERE id=?", (note_id,)).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["linked_paper_ids"] = json.loads(d.get("linked_paper_ids", "[]"))
+        return d
+
+    def update_note(self, note_id: str, content: str = None, source_url: str = None,
+                    note_type: str = None) -> bool:
+        sets = []
+        params = []
+        if content is not None:
+            sets.append("content=?")
+            params.append(content)
+        if source_url is not None:
+            sets.append("source_url=?")
+            params.append(source_url)
+        if note_type is not None:
+            sets.append("note_type=?")
+            params.append(note_type)
+        if not sets:
+            return False
+        sets.append("updated_at=datetime('now')")
+        params.append(note_id)
+        with self._get_conn() as conn:
+            conn.execute(f"UPDATE quick_notes SET {', '.join(sets)} WHERE id=?", params)
+            conn.commit()
+        return True
+
+    def delete_note(self, note_id: str) -> bool:
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT id FROM quick_notes WHERE id=?", (note_id,)).fetchone()
+            if not row:
+                return False
+            conn.execute("DELETE FROM quick_notes WHERE id=?", (note_id,))
+            conn.commit()
+        return True
+
+    def update_note_linked_papers(self, note_id: str, paper_ids: list[str]) -> bool:
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE quick_notes SET linked_paper_ids=?, updated_at=datetime('now') WHERE id=?",
+                (json.dumps(paper_ids, ensure_ascii=False), note_id)
+            )
+            conn.commit()
+        return True
+
+    # --- 笔记类型管理 ---
+    def seed_default_types(self, project_id: str):
+        """首次访问时插入默认类型"""
+        existing = self.get_note_types(project_id)
+        if existing:
+            return
+        defaults = [
+            ("通用笔记", "slate"),
+            ("灵感", "amber"),
+            ("摘录高亮", "blue"),
+        ]
+        with self._get_conn() as conn:
+            for i, (name, color) in enumerate(defaults):
+                tid = f"ntype_{uuid.uuid4().hex[:8]}"
+                conn.execute(
+                    "INSERT INTO note_types (id, project_id, name, color, sort_order) VALUES (?, ?, ?, ?, ?)",
+                    (tid, project_id, name, color, i)
+                )
+            conn.commit()
+
+    def add_note_type(self, project_id: str, name: str, color: str = "slate") -> str:
+        tid = f"ntype_{uuid.uuid4().hex[:8]}"
+        with self._get_conn() as conn:
+            max_order = conn.execute(
+                "SELECT COALESCE(MAX(sort_order), -1) FROM note_types WHERE project_id=?",
+                (project_id,)
+            ).fetchone()[0]
+            conn.execute(
+                "INSERT INTO note_types (id, project_id, name, color, sort_order) VALUES (?, ?, ?, ?, ?)",
+                (tid, project_id, name, color, max_order + 1)
+            )
+            conn.commit()
+        return tid
+
+    def get_note_types(self, project_id: str) -> list[dict]:
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM note_types WHERE project_id=? ORDER BY sort_order",
+                (project_id,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def rename_note_type(self, type_id: str, name: str = None, color: str = None) -> bool:
+        sets, params = [], []
+        if name is not None:
+            sets.append("name=?")
+            params.append(name)
+        if color is not None:
+            sets.append("color=?")
+            params.append(color)
+        if not sets:
+            return False
+        params.append(type_id)
+        with self._get_conn() as conn:
+            conn.execute(f"UPDATE note_types SET {', '.join(sets)} WHERE id=?", params)
+            conn.commit()
+        return True
+
+    def delete_note_type(self, type_id: str) -> bool:
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT name, project_id FROM note_types WHERE id=?", (type_id,)).fetchone()
+            if not row:
+                return False
+            type_name, project_id = row["name"], row["project_id"]
+            conn.execute(
+                "UPDATE quick_notes SET note_type='通用笔记' WHERE note_type=? AND project_id=?",
+                (type_name, project_id)
+            )
+            conn.execute("DELETE FROM note_types WHERE id=?", (type_id,))
+            conn.commit()
+        return True
+
+    # --- 笔记排序与置顶 ---
+    def toggle_pin(self, note_id: str) -> dict:
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT pinned FROM quick_notes WHERE id=?", (note_id,)).fetchone()
+            if not row:
+                return {"error": "not_found"}
+            new_pin = 0 if row["pinned"] else 1
+            conn.execute(
+                "UPDATE quick_notes SET pinned=?, updated_at=datetime('now') WHERE id=?",
+                (new_pin, note_id)
+            )
+            conn.commit()
+        return {"pinned": new_pin}
+
+    def reorder_notes(self, ordered_ids: list[str]):
+        with self._get_conn() as conn:
+            for i, nid in enumerate(ordered_ids):
+                conn.execute(
+                    "UPDATE quick_notes SET sort_order=? WHERE id=?",
+                    (i, nid)
+                )
+            conn.commit()
+
+    def get_notes(self, project_id: str, limit: int = 20, offset: int = 0,
+                  note_type: str = None) -> list[dict]:
+        with self._get_conn() as conn:
+            query = "SELECT * FROM quick_notes WHERE project_id=?"
+            params: list = [project_id]
+            if note_type:
+                query += " AND note_type=?"
+                params.append(note_type)
+            query += " ORDER BY pinned DESC, sort_order ASC, created_at DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+            rows = conn.execute(query, params).fetchall()
+        results = []
+        for r in rows:
+            d = dict(r)
+            d["linked_paper_ids"] = json.loads(d.get("linked_paper_ids", "[]"))
+            results.append(d)
+        return results
+
+    # --- 笔记合并 ---
+    def merge_notes(self, keep_id: str, absorb_ids: list[str]) -> dict:
+        with self._get_conn() as conn:
+            keep = conn.execute("SELECT * FROM quick_notes WHERE id=?", (keep_id,)).fetchone()
+            if not keep:
+                return {"error": "keep_not_found"}
+            project_id = keep["project_id"]
+            keep_content = keep["content"]
+            keep_papers = set(json.loads(keep["linked_paper_ids"] or "[]"))
+            absorb_contents = []
+            absorbed_ids = []
+            for aid in absorb_ids:
+                row = conn.execute(
+                    "SELECT content, project_id, linked_paper_ids FROM quick_notes WHERE id=?",
+                    (aid,)
+                ).fetchone()
+                if not row or row["project_id"] != project_id:
+                    continue
+                absorb_contents.append(row["content"])
+                absorbed_ids.append(aid)
+                absorb_papers = json.loads(row["linked_paper_ids"] or "[]")
+                keep_papers.update(absorb_papers)
+            merged = keep_content
+            if absorb_contents:
+                merged += "\n\n---\n\n" + "\n\n---\n\n".join(absorb_contents)
+            conn.execute(
+                "UPDATE quick_notes SET content=?, linked_paper_ids=?, updated_at=datetime('now') WHERE id=?",
+                (merged, json.dumps(list(keep_papers), ensure_ascii=False), keep_id)
+            )
+            for aid in absorbed_ids:
+                conn.execute("DELETE FROM quick_notes WHERE id=?", (aid,))
+            conn.commit()
+        return {"merged_id": keep_id, "absorbed_count": len(absorb_contents)}
 
     # --- 用户管理 ---
     def create_user(self, username: str, password_hash: str, password_salt: str = "") -> Optional[str]:

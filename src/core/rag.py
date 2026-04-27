@@ -169,11 +169,18 @@ def chunk_paper(paper_data: dict) -> list[dict]:
                 paper_data, section_title, "L1", text, has_table=has_table
             ))
         else:
-            # 长章节：语义切块（embedding-based，自动降级到规则切分）
+            # 长章节：L1 作为父 chunk，L2 子 chunk 记录 parent_chunk_id
+            l1_chunk = _build_chunk(
+                paper_data, section_title, "L1", text[:CHUNK_TARGET_SIZE], has_table=has_table
+            )
+            chunks.append(l1_chunk)
+
+            # 语义切块（embedding-based，自动降级到规则切分）
             sub_texts = _semantic_chunk(text)
             for sub in sub_texts:
                 chunks.append(_build_chunk(
-                    paper_data, section_title, "L2", sub, has_table=has_table
+                    paper_data, section_title, "L2", sub, has_table=has_table,
+                    parent_chunk_id=l1_chunk["chunk_id"]
                 ))
 
     # Stage 3: 表格（带上下文）
@@ -504,7 +511,8 @@ def _build_table_context(table: dict, section_text: str) -> str:
 # ================================================================
 
 def _build_chunk(paper_data: dict, section_title: str,
-                 level: str, text: str, has_table: bool = False) -> dict:
+                 level: str, text: str, has_table: bool = False,
+                 parent_chunk_id: str = "") -> dict:
     """统一构建 chunk dict，保证数据结构兼容"""
     return {
         "chunk_id": f"{paper_data['paper_id']}_{level}_{uuid.uuid4().hex[:8]}",
@@ -517,6 +525,7 @@ def _build_chunk(paper_data: dict, section_title: str,
         "text": text,
         "has_figure": False,
         "has_table": has_table,
+        "parent_chunk_id": parent_chunk_id,
     }
 
 

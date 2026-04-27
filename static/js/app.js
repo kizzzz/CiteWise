@@ -161,6 +161,9 @@ async function selectProject(id) {
     closeAllDropdowns();
     renderProjectList();
     loadMaterialsFromStorage();
+    // Reset notes filter on project switch
+    const filter = document.getElementById('noteTypeFilter');
+    if (filter) filter.value = '';
     await loadProjectData();
 }
 
@@ -961,6 +964,9 @@ async function loadKnowledgeMap() {
     loading.textContent = '加载中...';
     loading.classList.remove('hidden');
 
+    // 等待 DOM 布局就绪（switchView 刚将容器从 display:none 切为 flex）
+    await new Promise(r => requestAnimationFrame(r));
+
     try {
         const data = await (await api('GET', `/knowledge-map?project_id=${currentProjectId}`)).json();
         if (!data.nodes || data.nodes.length === 0) {
@@ -979,8 +985,8 @@ function renderKnowledgeMap(data) {
     svg.selectAll('*').remove();
 
     const container = document.getElementById('knowledgeMapContainer');
-    const width = container.clientWidth;
-    const height = container.clientHeight;
+    const width = container.clientWidth || 800;
+    const height = container.clientHeight || 600;
 
     svg.attr('viewBox', [0, 0, width, height]);
 
@@ -2555,6 +2561,10 @@ function switchView(id, btn) {
     closeAgentDetail();
     closeAllDropdowns();
 
+    // Show Quick Note FAB only on paperView
+    const fab = document.getElementById('quickNoteFab');
+    if (fab) fab.style.display = (id === 'paperView') ? '' : 'none';
+
     // Initialize combined views
     if (id === 'extensionView') {
         switchExtensionTab('skillTab');
@@ -2599,6 +2609,512 @@ function showToast(msg, type = 'success') {
     document.body.appendChild(toast);
     setTimeout(() => toast.remove(), 3000);
 }
+
+// ============ Quick Note Functions ============
+function openQuickNoteModal() {
+    const modal = document.getElementById('quickNoteModal');
+    const content = document.getElementById('qnContent');
+    const url = document.getElementById('qnUrl');
+    const linked = document.getElementById('qnLinkedPapers');
+    const saveBtn = document.getElementById('qnSaveBtn');
+    const suggestion = document.getElementById('qnTypeSuggestion');
+    if (content) content.value = '';
+    if (url) url.value = '';
+    if (linked) { linked.classList.add('hidden'); linked.innerHTML = ''; }
+    if (suggestion) suggestion.classList.add('hidden');
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '保存并关联文献'; saveBtn.style.display = ''; saveBtn.onclick = saveQuickNote; }
+    // Re-enable fields that viewNoteLinks may have disabled
+    const qnContent = document.getElementById('qnContent');
+    const qnUrl = document.getElementById('qnUrl');
+    const qnType = document.getElementById('qnType');
+    if (qnContent) qnContent.disabled = false;
+    if (qnUrl) qnUrl.disabled = false;
+    if (qnType) qnType.disabled = false;
+    if (modal) modal.classList.remove('hidden');
+    loadNoteTypes();
+    if (content) content.focus();
+}
+
+function closeQuickNoteModal() {
+    const modal = document.getElementById('quickNoteModal');
+    if (modal) modal.classList.add('hidden');
+}
+
+// ===== Note Types =====
+
+let _noteTypes = [];
+let _pendingSuggestion = null;
+
+async function loadNoteTypes() {
+    if (!currentProjectId) return;
+    try {
+        const types = await (await api('GET', `/notes/types?project_id=${currentProjectId}`)).json();
+        _noteTypes = types;
+        // Populate dropdown
+        const select = document.getElementById('qnType');
+        const filter = document.getElementById('noteTypeFilter');
+        if (select) {
+            select.innerHTML = types.map(t => `<option value="${escapeHtml(t.name)}">${escapeHtml(t.name)}</option>`).join('');
+        }
+        if (filter) {
+            filter.innerHTML = '<option value="">全部类型</option>' + types.map(t => `<option value="${escapeHtml(t.name)}">${escapeHtml(t.name)}</option>`).join('');
+        }
+    } catch (e) { /* silent */ }
+}
+
+function openNoteTypeManager() {
+    renderNoteTypeList();
+    document.getElementById('noteTypeModal').classList.remove('hidden');
+}
+
+function renderNoteTypeList() {
+    const list = document.getElementById('noteTypeList');
+    if (!list) return;
+    list.innerHTML = _noteTypes.map(t => `
+        <div class="flex items-center gap-3 p-3 bg-slate-50 rounded-xl group">
+            <span class="w-3 h-3 rounded-full bg-${t.color}-400 shrink-0"></span>
+            <span class="flex-1 text-sm font-semibold text-slate-700">${escapeHtml(t.name)}</span>
+            <button onclick="renameNoteType('${escapeJs(t.id)}', '${escapeJs(t.name)}')" class="p-1 hover:bg-white rounded text-slate-400 hover:text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity" title="重命名">
+                <i data-lucide="pencil" class="w-3 h-3"></i>
+            </button>
+            <button onclick="deleteNoteType('${escapeJs(t.id)}')" class="p-1 hover:bg-white rounded text-slate-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity" title="删除">
+                <i data-lucide="trash-2" class="w-3 h-3"></i>
+            </button>
+        </div>
+    `).join('');
+    if (typeof lucide !== 'undefined') lucide.createIcons();
+}
+
+async function addNoteType(color) {
+    if (!currentProjectId) return;
+    const input = document.getElementById('newTypeName');
+    const name = input ? input.value.trim() : '';
+    if (!name) { showToast('请输入分类名称', 'error'); return; }
+    try {
+        await api('POST', '/notes/types', { project_id: currentProjectId, name, color });
+        input.value = '';
+        showToast('分类已添加');
+        await loadNoteTypes();
+        renderNoteTypeList();
+    } catch (e) { showToast('添加失败', 'error'); }
+}
+
+async function renameNoteType(typeId, oldName) {
+    const newName = prompt('重命名分类:', oldName);
+    if (!newName || newName === oldName) return;
+    try {
+        await api('PUT', `/notes/types/${typeId}`, { name: newName });
+        showToast('已重命名');
+        await loadNoteTypes();
+        renderNoteTypeList();
+    } catch (e) { showToast('重命名失败', 'error'); }
+}
+
+async function deleteNoteType(typeId) {
+    if (!confirm('删除此分类？关联笔记将重置为"通用笔记"')) return;
+    try {
+        await api('DELETE', `/notes/types/${typeId}`);
+        showToast('已删除');
+        await loadNoteTypes();
+        renderNoteTypeList();
+    } catch (e) { showToast('删除失败', 'error'); }
+}
+
+// ===== Save Note =====
+
+async function saveQuickNote() {
+    if (!currentProjectId) { showToast('请先选择项目', 'error'); return; }
+    const content = document.getElementById('qnContent').value.trim();
+    if (!content) { showToast('请输入笔记内容', 'error'); return; }
+
+    const url = document.getElementById('qnUrl').value.trim();
+    const noteType = document.getElementById('qnType').value;
+    const saveBtn = document.getElementById('qnSaveBtn');
+    if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = '保存中...'; }
+
+    try {
+        const note = await (await api('POST', '/notes', {
+            project_id: currentProjectId, content, source_url: url, note_type: noteType
+        })).json();
+        showToast('笔记已保存');
+        if (note.linked_papers && note.linked_papers.length > 0) {
+            renderLinkedPapers(note.linked_papers);
+        }
+        if (saveBtn) { saveBtn.textContent = '已保存'; }
+        if (document.getElementById('notesTab') && !document.getElementById('notesTab').classList.contains('hidden')) {
+            loadNotesList();
+        }
+        // Auto-suggest type after save
+        suggestNoteType(note.id);
+    } catch (e) {
+        showToast('保存失败: ' + e.message, 'error');
+        if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '保存并关联文献'; }
+    }
+}
+
+function renderLinkedPapers(papers) {
+    const container = document.getElementById('qnLinkedPapers');
+    if (!container || !papers.length) return;
+    container.classList.remove('hidden');
+    container.innerHTML = `
+        <div class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">AI 关联文献</div>
+        ${papers.map(p => `
+            <div class="flex items-center gap-3 p-3 bg-blue-50 border border-blue-100 rounded-xl cursor-pointer hover:bg-blue-100 transition-all" onclick="openPaperFromNote('${escapeJs(p.paper_id)}')">
+                <i data-lucide="file-text" class="w-4 h-4 text-blue-500 shrink-0"></i>
+                <div class="min-w-0 flex-1">
+                    <p class="text-xs font-semibold text-slate-700 truncate">${escapeHtml(p.title || '未知标题')}</p>
+                    <p class="text-[10px] text-slate-400">${escapeHtml(p.authors || '')}</p>
+                </div>
+                <span class="text-[10px] text-blue-500 font-bold shrink-0">${Math.round((1 - p.distance) * 100)}%</span>
+            </div>
+        `).join('')}`;
+    if (typeof lucide !== 'undefined') lucide.createIcons();
+}
+
+function openPaperFromNote(paperId) {
+    closeQuickNoteModal();
+    switchView('paperView', document.getElementById('navPaper'));
+    setTimeout(() => openPaperDetail(paperId), 300);
+}
+
+function switchPaperTab(tabId) {
+    const tabs = ['paperListTab', 'notesTab'];
+    const btns = ['paperListTabBtn', 'notesTabBtn'];
+    const uploadBtn = document.getElementById('paperUploadBtn');
+    tabs.forEach((t, i) => {
+        const el = document.getElementById(t);
+        const btn = document.getElementById(btns[i]);
+        if (el) el.classList.toggle('hidden', t !== tabId);
+        if (btn) { btn.classList.toggle('active', t === tabId); }
+    });
+    if (uploadBtn) uploadBtn.classList.toggle('hidden', tabId !== 'paperListTab');
+    if (tabId === 'notesTab') {
+        loadNoteTypes();
+        loadNotesList();
+    }
+}
+
+// ===== Notes List =====
+
+async function loadNotesList() {
+    if (!currentProjectId) return;
+    const container = document.getElementById('notesListContainer');
+    const empty = document.getElementById('notesEmpty');
+    const countEl = document.getElementById('noteCount');
+    const filterEl = document.getElementById('noteTypeFilter');
+    if (!container) return;
+
+    const typeFilter = filterEl ? filterEl.value : '';
+    const query = `project_id=${currentProjectId}&limit=50` + (typeFilter ? `&note_type=${encodeURIComponent(typeFilter)}` : '');
+
+    try {
+        const notes = await (await api('GET', `/notes?${query}`)).json();
+
+        if (!notes.length) {
+            if (empty) empty.classList.remove('hidden');
+            container.innerHTML = '';
+            if (countEl) countEl.textContent = '';
+            return;
+        }
+        if (empty) empty.classList.add('hidden');
+        if (countEl) countEl.textContent = `${notes.length} 条笔记`;
+
+        // Build type color map from _noteTypes
+        const typeColorMap = {};
+        _noteTypes.forEach(t => { typeColorMap[t.name] = t.color; });
+
+        container.innerHTML = notes.map(n => {
+            const linkedCount = (n.linked_paper_ids || []).length;
+            const typeName = n.note_type || '通用笔记';
+            const typeColor = typeColorMap[typeName] || 'slate';
+            const preview = n.content.length > 120 ? n.content.slice(0, 120) + '...' : n.content;
+            const time = n.created_at ? n.created_at.slice(0, 16).replace('T', ' ') : '';
+            const isPinned = n.pinned === 1;
+            return `
+            <div class="bg-white border ${isPinned ? 'border-blue-300 bg-blue-50/30' : 'border-slate-200'} rounded-2xl p-5 hover:shadow-md transition-all ${isPinned ? 'ring-1 ring-blue-200' : ''}">
+                <div class="flex items-start justify-between gap-4">
+                    <div class="flex-1 min-w-0">
+                        ${isPinned ? '<div class="flex items-center gap-1 mb-1 text-[10px] text-blue-500 font-bold"><i data-lucide="pin" class="w-3 h-3"></i> 置顶</div>' : ''}
+                        <p class="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">${escapeHtml(preview)}</p>
+                        <div class="flex items-center gap-3 mt-3 text-[10px] text-slate-400">
+                            <span>${time}</span>
+                            <span class="px-2 py-0.5 bg-${typeColor}-50 text-${typeColor}-600 rounded-full font-bold">${escapeHtml(typeName)}</span>
+                            ${linkedCount ? `<span class="flex items-center gap-1 text-blue-500"><i data-lucide="link" class="w-3 h-3"></i>${linkedCount} 篇关联</span>` : ''}
+                            ${n.source_url ? `<a href="${escapeAttr(n.source_url)}" target="_blank" class="text-indigo-400 hover:underline truncate max-w-[150px]">${escapeHtml(n.source_url.replace(/^https?:\/\//, '').slice(0, 30))}</a>` : ''}
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-1 shrink-0">
+                        <button onclick="togglePinNote('${escapeJs(n.id)}')" class="p-1.5 hover:bg-slate-100 rounded-lg ${isPinned ? 'text-blue-500' : 'text-slate-300 hover:text-slate-500'}" title="${isPinned ? '取消置顶' : '置顶'}">
+                            <i data-lucide="pin" class="w-3.5 h-3.5"></i>
+                        </button>
+                        <button onclick="suggestNoteTypeForCard('${escapeJs(n.id)}')" class="p-1.5 hover:bg-amber-50 rounded-lg text-slate-300 hover:text-amber-500" title="AI 分类">
+                            <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
+                        </button>
+                        <button onclick="editNote('${escapeJs(n.id)}')" class="p-1.5 hover:bg-slate-100 rounded-lg text-slate-400 hover:text-slate-600" title="编辑">
+                            <i data-lucide="pencil" class="w-3.5 h-3.5"></i>
+                        </button>
+                        <button onclick="deleteNote('${escapeJs(n.id)}')" class="p-1.5 hover:bg-red-50 rounded-lg text-slate-400 hover:text-red-500" title="删除">
+                            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                        </button>
+                    </div>
+                </div>
+                ${linkedCount ? `<div class="mt-3 pt-3 border-t border-slate-100 flex items-center gap-2">
+                    <button onclick="viewNoteLinks('${escapeJs(n.id)}')" class="text-[10px] font-bold text-blue-500 hover:text-blue-700 flex items-center gap-1">
+                        <i data-lucide="eye" class="w-3 h-3"></i> 查看关联文献
+                    </button>
+                    <button onclick="relinkNotePapers('${escapeJs(n.id)}')" class="text-[10px] font-bold text-slate-400 hover:text-indigo-500 flex items-center gap-1">
+                        <i data-lucide="refresh-cw" class="w-3 h-3"></i> 重新关联
+                    </button>
+                </div>` : ''}
+            </div>`;
+        }).join('');
+        if (typeof lucide !== 'undefined') lucide.createIcons();
+    } catch (e) {
+        showToast('加载笔记失败: ' + e.message, 'error');
+    }
+}
+
+async function deleteNote(noteId) {
+    if (!confirm('确定删除这条笔记？')) return;
+    try {
+        await api('DELETE', `/notes/${noteId}`);
+        showToast('已删除');
+        loadNotesList();
+    } catch (e) { showToast('删除失败', 'error'); }
+}
+
+async function editNote(noteId) {
+    try {
+        const n = await (await api('GET', `/notes/${noteId}`)).json();
+        openQuickNoteModal();
+        document.getElementById('qnContent').value = n.content;
+        document.getElementById('qnUrl').value = n.source_url || '';
+        document.getElementById('qnType').value = n.note_type || '通用笔记';
+        const saveBtn = document.getElementById('qnSaveBtn');
+        saveBtn.textContent = '更新笔记';
+        saveBtn.onclick = async () => {
+            const content = document.getElementById('qnContent').value.trim();
+            if (!content) { showToast('内容不能为空', 'error'); return; }
+            saveBtn.disabled = true; saveBtn.textContent = '更新中...';
+            try {
+                await api('PUT', `/notes/${noteId}`, {
+                    content,
+                    source_url: document.getElementById('qnUrl').value.trim(),
+                    note_type: document.getElementById('qnType').value,
+                });
+                showToast('已更新'); closeQuickNoteModal(); loadNotesList();
+            } catch (e) {
+                showToast('更新失败', 'error');
+                saveBtn.disabled = false;
+                saveBtn.textContent = '更新笔记';
+                // Keep the edit handler, don't reset to saveQuickNote
+            }
+        };
+    } catch (e) { showToast('加载笔记失败', 'error'); }
+}
+
+async function viewNoteLinks(noteId) {
+    try {
+        const note = await (await api('GET', `/notes/${noteId}`)).json();
+        if (note.linked_paper_ids && note.linked_paper_ids.length) {
+            openQuickNoteModal();
+            document.getElementById('qnContent').value = note.content;
+            document.getElementById('qnContent').disabled = true;
+            document.getElementById('qnUrl').disabled = true;
+            document.getElementById('qnType').disabled = true;
+            document.getElementById('qnSaveBtn').style.display = 'none';
+            const papers = [];
+            for (const pid of note.linked_paper_ids) {
+                try {
+                    const pd = await (await api('GET', `/papers/${pid}`)).json();
+                    papers.push({ paper_id: pid, title: pd.title, authors: pd.authors, distance: 0 });
+                } catch {}
+            }
+            if (papers.length) renderLinkedPapers(papers);
+        }
+    } catch (e) { showToast('加载失败', 'error'); }
+}
+
+async function relinkNotePapers(noteId) {
+    showToast('重新关联中...');
+    try {
+        await api('POST', `/notes/${noteId}/link-papers`);
+        showToast('关联已更新'); loadNotesList();
+    } catch (e) { showToast('关联失败', 'error'); }
+}
+
+// ===== Pin & Reorder =====
+
+async function togglePinNote(noteId) {
+    try {
+        const result = await (await api('POST', `/notes/${noteId}/pin`)).json();
+        showToast(result.pinned ? '已置顶' : '已取消置顶');
+        loadNotesList();
+    } catch (e) { showToast('操作失败', 'error'); }
+}
+
+// ===== AI Classification =====
+
+async function suggestNoteType(noteId) {
+    try {
+        const result = await (await api('POST', `/notes/${noteId}/suggest-type`)).json();
+        if (result.suggested_type && result.confidence > 0.5) {
+            _pendingSuggestion = { noteId, type: result.suggested_type };
+            const banner = document.getElementById('qnTypeSuggestion');
+            const text = document.getElementById('qnSuggestionText');
+            if (banner && text) {
+                text.textContent = `AI 建议: ${result.suggested_type} (${Math.round(result.confidence * 100)}%)`;
+                banner.classList.remove('hidden');
+            }
+        }
+    } catch (e) { /* silent */ }
+}
+
+async function suggestNoteTypeForCard(noteId) {
+    showToast('AI 分析中...');
+    try {
+        const result = await (await api('POST', `/notes/${noteId}/suggest-type`)).json();
+        if (result.suggested_type && result.confidence > 0.3) {
+            // Apply directly
+            await api('PUT', `/notes/${noteId}`, { note_type: result.suggested_type });
+            showToast(`已分类为: ${result.suggested_type}`);
+            loadNotesList();
+        } else {
+            showToast('AI 无法确定分类');
+        }
+    } catch (e) { showToast('分类失败', 'error'); }
+}
+
+function applySuggestedType() {
+    if (!_pendingSuggestion) return;
+    const { noteId, type } = _pendingSuggestion;
+    api('PUT', `/notes/${noteId}`, { note_type: type }).then(() => {
+        showToast('已应用 AI 建议');
+        const select = document.getElementById('qnType');
+        if (select) select.value = type;
+        dismissSuggestion();
+        loadNotesList();
+    }).catch(() => showToast('应用失败', 'error'));
+}
+
+function dismissSuggestion() {
+    _pendingSuggestion = null;
+    const banner = document.getElementById('qnTypeSuggestion');
+    if (banner) banner.classList.add('hidden');
+}
+
+async function batchClassifyNotes() {
+    if (!currentProjectId) { showToast('请先选择项目', 'error'); return; }
+    if (!confirm('AI 将自动分类所有"通用笔记"类型的笔记，确定继续？')) return;
+    showToast('AI 批量分类中...');
+    try {
+        const result = await (await api('POST', '/notes/batch-classify', { project_id: currentProjectId })).json();
+        showToast(`已完成 ${result.classified} 条分类`);
+        loadNotesList();
+    } catch (e) { showToast('分类失败', 'error'); }
+}
+
+// ===== Merge =====
+
+async function showMergeSuggestions() {
+    if (!currentProjectId) { showToast('请先选择项目', 'error'); return; }
+    document.getElementById('mergeModal').classList.remove('hidden');
+    document.getElementById('mergeLoading').classList.remove('hidden');
+    document.getElementById('mergePairsList').innerHTML = '';
+    document.getElementById('mergeEmpty').classList.add('hidden');
+    document.getElementById('mergeAllBtn').classList.add('hidden');
+
+    try {
+        const result = await (await api('POST', '/notes/merge-suggestions', { project_id: currentProjectId })).json();
+        document.getElementById('mergeLoading').classList.add('hidden');
+
+        if (!result.pairs || !result.pairs.length) {
+            document.getElementById('mergeEmpty').classList.remove('hidden');
+            return;
+        }
+
+        document.getElementById('mergeAllBtn').classList.remove('hidden');
+        document.getElementById('mergePairsList').innerHTML = result.pairs.map((p, i) => `
+            <div class="bg-slate-50 border border-slate-200 rounded-2xl p-4" data-pair="${i}">
+                <div class="flex items-center justify-between mb-3">
+                    <span class="text-xs font-bold text-purple-600">相似度 ${Math.round(p.similarity * 100)}%</span>
+                    <div class="flex gap-2">
+                        <button onclick="acceptMerge('${escapeJs(p.note_a.id)}', '${escapeJs(p.note_b.id)}', ${i})" class="px-3 py-1 bg-purple-600 text-white rounded-lg text-[10px] font-bold hover:bg-purple-700">合并</button>
+                        <button onclick="dismissMerge(${i})" class="px-3 py-1 bg-white border border-slate-200 text-slate-500 rounded-lg text-[10px] font-bold hover:bg-slate-100">忽略</button>
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div class="bg-white rounded-xl p-3 border border-slate-100">
+                        <span class="text-[10px] font-bold text-slate-400 mb-1 block">${escapeHtml(p.note_a.type)}</span>
+                        <p class="text-xs text-slate-700 line-clamp-3">${escapeHtml(p.note_a.content)}</p>
+                    </div>
+                    <div class="bg-white rounded-xl p-3 border border-slate-100">
+                        <span class="text-[10px] font-bold text-slate-400 mb-1 block">${escapeHtml(p.note_b.type)}</span>
+                        <p class="text-xs text-slate-700 line-clamp-3">${escapeHtml(p.note_b.content)}</p>
+                    </div>
+                </div>
+            </div>
+        `).join('');
+        if (typeof lucide !== 'undefined') lucide.createIcons();
+    } catch (e) {
+        document.getElementById('mergeLoading').classList.add('hidden');
+        showToast('分析失败', 'error');
+    }
+}
+
+async function acceptMerge(keepId, absorbId, pairIndex) {
+    try {
+        await api('POST', '/notes/merge', { keep_id: keepId, absorb_ids: [absorbId] });
+        showToast('已合并');
+        dismissMerge(pairIndex);
+        loadNotesList();
+    } catch (e) { showToast('合并失败', 'error'); }
+}
+
+function dismissMerge(pairIndex) {
+    const el = document.querySelector(`[data-pair="${pairIndex}"]`);
+    if (el) el.remove();
+    // Check if any pairs left
+    if (!document.getElementById('mergePairsList').children.length) {
+        document.getElementById('mergeEmpty').classList.remove('hidden');
+        document.getElementById('mergeAllBtn').classList.add('hidden');
+    }
+}
+
+async function executeAllMerges() {
+    const pairs = document.querySelectorAll('[data-pair]');
+    if (!pairs.length) return;
+    let merged = 0;
+    // Collect all pair data before DOM changes
+    const pairData = Array.from(pairs).map(el => {
+        const btn = el.querySelector('button');
+        return btn ? btn.getAttribute('onclick') : null;
+    });
+    for (const onclickStr of pairData) {
+        if (!onclickStr) continue;
+        const match = onclickStr.match(/acceptMerge\('([^']+)','([^']+)',(\d+)\)/);
+        if (!match) continue;
+        try {
+            await api('POST', '/notes/merge', { keep_id: match[1], absorb_ids: [match[2]] });
+            merged++;
+        } catch (e) { /* skip failed merges */ }
+    }
+    showToast(`已完成 ${merged} 对合并`);
+    document.getElementById('mergeModal').classList.add('hidden');
+    loadNotesList();
+}
+
+// Keyboard shortcut: Shift+N
+document.addEventListener('keydown', (e) => {
+    if (e.shiftKey && e.key === 'N' && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        const tag = document.activeElement?.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || document.activeElement?.isContentEditable) return;
+        e.preventDefault();
+        openQuickNoteModal();
+    }
+});
+
+// ============ End Quick Note ============
 
 function escapeHtml(str) {
     if (!str) return '';

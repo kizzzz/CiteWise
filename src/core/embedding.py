@@ -1,7 +1,9 @@
 """Embedding 和向量库管理（智谱 embedding-3）"""
+import hashlib
 import json
 import uuid
 import logging
+from collections import OrderedDict
 from typing import Optional
 
 import chromadb
@@ -9,14 +11,14 @@ from openai import OpenAI
 
 from config.settings import (
     CHROMA_PATH, OPENAI_API_KEY, OPENAI_BASE_URL,
-    EMBEDDING_MODEL
+    EMBEDDING_MODEL, EMBEDDING_CACHE_SIZE
 )
 
 logger = logging.getLogger(__name__)
 
 
 class EmbeddingManager:
-    """Embedding 管理，使用智谱 embedding-3"""
+    """Embedding 管理，使用智谱 embedding-3，带 LRU 缓存"""
 
     def __init__(self):
         self.client = OpenAI(
@@ -24,11 +26,50 @@ class EmbeddingManager:
             base_url=OPENAI_BASE_URL,
         )
         self.model = EMBEDDING_MODEL
+        # LRU 缓存: content_hash → embedding vector
+        self._cache: OrderedDict[str, list[float]] = OrderedDict()
+        self._cache_max_size = EMBEDDING_CACHE_SIZE
+
+    def _content_hash(self, text: str) -> str:
+        """基于文本内容生成 hash 键"""
+        return hashlib.md5(text.encode("utf-8")).hexdigest()
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        """批量生成 embedding"""
+        """批量生成 embedding，未缓存的文本调用 API，已缓存的直接返回"""
         if not texts:
             return []
+
+        results: list[Optional[list[float]]] = [None] * len(texts)
+        uncached_indices: list[int] = []
+        uncached_texts: list[str] = []
+
+        # 查缓存
+        for i, text in enumerate(texts):
+            key = self._content_hash(text)
+            if key in self._cache:
+                results[i] = self._cache[key]
+                # 移到末尾（最近使用）
+                self._cache.move_to_end(key)
+            else:
+                uncached_indices.append(i)
+                uncached_texts.append(text)
+
+        # 对未缓存的文本调用 API
+        if uncached_texts:
+            api_results = self._call_api(uncached_texts)
+            for j, idx in enumerate(uncached_indices):
+                if j < len(api_results):
+                    results[idx] = api_results[j]
+                    # 存入缓存
+                    key = self._content_hash(uncached_texts[j])
+                    self._cache[key] = api_results[j]
+                    if len(self._cache) > self._cache_max_size:
+                        self._cache.popitem(last=False)  # 移除最旧的
+
+        return [r for r in results if r is not None]
+
+    def _call_api(self, texts: list[str]) -> list[list[float]]:
+        """调用 embedding API"""
         import time
         for attempt in range(3):
             try:
@@ -70,6 +111,7 @@ class VectorStore:
             "section_title": c.get("section_title", ""),
             "section_level": c.get("section_level", "L2"),
             "has_table": c.get("has_table", False),
+            "parent_chunk_id": c.get("parent_chunk_id", ""),
         } for c in chunks]
 
         # 批量生成 embedding（智谱单次最多64条）
@@ -146,7 +188,7 @@ class VectorStore:
         try:
             results = self.paper_collection.get(
                 where={"paper_id": paper_id},
-                include=["documents", "metadatas"],
+                include=["documents", "metadatas", "embeddings"],
             )
         except Exception as e:
             logger.error(f"获取论文 chunks 失败: {e}")
@@ -159,6 +201,7 @@ class VectorStore:
                 output.append({
                     "chunk_id": results["ids"][i],
                     "text": results["documents"][i],
+                    "embedding": results["embeddings"][i] if results.get("embeddings") else [],
                     "section_title": meta.get("section_title", ""),
                     "section_level": meta.get("section_level", "L2"),
                     "has_table": meta.get("has_table", False),

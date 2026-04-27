@@ -28,9 +28,9 @@ class ResearchAgent(BaseAgent):
         self.reset()
         self.think(f"检索关键词: {query[:60]}")
 
-        # 1. RAG 检索
+        # 1. RAG 检索（传递 intent 用于意图感知检索）
         where_filter = {"project_id": project_id} if project_id else None
-        chunks = hybrid_search(query, top_k=top_k, where=where_filter)
+        chunks = hybrid_search(query, top_k=top_k, where=where_filter, intent=intent)
         rag_content = format_chunks_with_citations(chunks) if chunks else ""
         sources = [
             {"title": c.get("paper_title", ""), "citation": c.get("citation", "")}

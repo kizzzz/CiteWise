@@ -2,12 +2,14 @@
 import asyncio
 import logging
 import re
+import time
 
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import PlainTextResponse
 
 from api.deps import require_auth
 from api.schemas import SectionCreate, SectionUpdate
+from src.eval.metrics import record_eval
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -31,6 +33,7 @@ async def create_section(req: SectionCreate, user: dict = Depends(require_auth))
         raise HTTPException(status_code=422, detail="Section name must not be empty")
 
     try:
+        start_time = time.time()
         result = await asyncio.to_thread(
             coordinator.process,
             f"帮我写{req.name}", req.project_id,
@@ -46,6 +49,31 @@ async def create_section(req: SectionCreate, user: dict = Depends(require_auth))
         content = result.get("content", "")
         citations = result.get("citations", [])
         project_memory.save_section(req.project_id, req.name, content, citations)
+
+        # Record eval
+        try:
+            citation_check = result.get("citations") if isinstance(result.get("citations"), dict) else {}
+            _citation_accuracy = citation_check.get("verification_rate", 0.0) if citation_check else 0.0
+            _eval_meta = {}
+            if citation_check:
+                _eval_meta["citations"] = {
+                    "total": citation_check.get("total_citations", 0),
+                    "verified": citation_check.get("verified", 0),
+                }
+            record_eval(
+                session_id=f"s_{req.project_id}_{int(time.time())}",
+                project_id=req.project_id,
+                intent="generate",
+                task_type="section",
+                success=bool(content),
+                response_time_ms=int((time.time() - start_time) * 1000),
+                has_citations=bool(citation_check),
+                citation_accuracy=round(_citation_accuracy, 4),
+                llm_model="glm-4.7",
+                metadata=_eval_meta if _eval_meta else None,
+            )
+        except Exception as e:
+            logger.warning(f"Section eval record failed: {e}")
 
         return {
             "section_name": req.name,

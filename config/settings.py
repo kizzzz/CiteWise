@@ -47,6 +47,28 @@ BM25_TOP_K = 20
 RERANK_TOP_K = 5
 RRF_K = 60
 
+# === Phase 1: 查询改写 + BM25 持久化 + Embedding 缓存 ===
+ENABLE_QUERY_REWRITE = _get_config("ENABLE_QUERY_REWRITE", "true").lower() == "true"
+ENABLE_HYDE = _get_config("ENABLE_HYDE", "false").lower() == "true"
+BM25_INDEX_PATH = os.path.join(DATA_DIR, "db", "bm25_index.pkl")
+EMBEDDING_CACHE_SIZE = int(_get_config("EMBEDDING_CACHE_SIZE", "10000"))
+
+# === Phase 2: 专用 Reranker + 父子 Chunk ===
+RERANKER_TYPE = _get_config("RERANKER_TYPE", "mmr")  # mmr | cross_encoder | llm
+RERANKER_MODEL = _get_config("RERANKER_MODEL", "")
+ENABLE_PARENT_CHUNK_EXPANSION = _get_config("ENABLE_PARENT_CHUNK_EXPANSION", "true").lower() == "true"
+
+# === Phase 3: 意图感知 + 查询缓存 ===
+ENABLE_INTENT_RETRIEVAL = _get_config("ENABLE_INTENT_RETRIEVAL", "true").lower() == "true"
+ENABLE_QUERY_CACHE = _get_config("ENABLE_QUERY_CACHE", "true").lower() == "true"
+QUERY_CACHE_TTL = int(_get_config("QUERY_CACHE_TTL", "300"))
+QUERY_CACHE_MAX_SIZE = int(_get_config("QUERY_CACHE_MAX_SIZE", "500"))
+
+# === Phase 4: 多查询 + 分数归一化 ===
+ENABLE_MULTI_QUERY = _get_config("ENABLE_MULTI_QUERY", "true").lower() == "true"
+MULTI_QUERY_MAX_SUBQUERIES = int(_get_config("MULTI_QUERY_MAX_SUBQUERIES", "3"))
+ENABLE_SCORE_NORMALIZATION = _get_config("ENABLE_SCORE_NORMALIZATION", "true").lower() == "true"
+
 # === 确保目录存在 ===
 for d in [DATA_DIR, PAPERS_DIR, FIGURES_DIR, os.path.dirname(DB_PATH), CHROMA_PATH]:
     os.makedirs(d, exist_ok=True)

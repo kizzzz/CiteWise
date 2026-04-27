@@ -385,6 +385,7 @@ async def stream_chat_response(user_input: str, project_id: str,
     if sources:
         yield {"event": "sources", "data": json.dumps(sources, ensure_ascii=False)}
 
+    cove_result = None
     # CoVe 事实性验证（仅在有 RAG 材料且内容足够长时运行）
     should_verify = (
         chunks
@@ -419,19 +420,47 @@ async def stream_chat_response(user_input: str, project_id: str,
     # Record eval
     try:
         from src.eval.metrics import record_eval
-        session_id = f"s_{project_id}_{int(time.time())}"
+
+        # citation_accuracy: 优先用 CoVe overall_score，回退到 citation_check verification_rate
+        if cove_result is not None:
+            _citation_accuracy = cove_result.get("overall_score", 0.0)
+            _hallucination_flag = len(cove_result.get("flagged_claims", [])) > 0
+        elif citation_check:
+            _citation_accuracy = citation_check.get("verification_rate", 0.0)
+            _hallucination_flag = False
+        else:
+            _citation_accuracy = 0.0
+            _hallucination_flag = False
+
+        # 评估元数据（存入 metadata JSON 字段，供后续分析）
+        _eval_meta = {}
+        if cove_result is not None:
+            _eval_meta["cove"] = {
+                "claim_count": len(cove_result.get("claims", [])),
+                "flagged_count": len(cove_result.get("flagged_claims", [])),
+                "overall_score": cove_result.get("overall_score", 0.0),
+            }
+        if citation_check:
+            _eval_meta["citations"] = {
+                "total": citation_check.get("total_citations", 0),
+                "verified": citation_check.get("verified", 0),
+            }
+
         record_eval(
             session_id=session_id,
             project_id=project_id,
             intent=intent,
-            task_type="text",
+            task_type=content_type,
             success=True,
             response_time_ms=elapsed,
             has_citations=bool(citation_check),
+            citation_accuracy=round(_citation_accuracy, 4),
+            hallucination_flag=_hallucination_flag,
             llm_model="glm-4.7",
+            metadata=_eval_meta if _eval_meta else None,
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Eval record failed: {e}")
 
 
 # ========== Build Async Graph ==========
