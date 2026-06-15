@@ -58,7 +58,14 @@ class PersistentBM25Index:
         logger.info(f"BM25 索引已保存到 {json_path}")
 
     def load(self) -> bool:
-        """从磁盘加载索引，成功返回 True"""
+        """从磁盘加载索引，成功返回 True。
+
+        Safety note (P0.1): The legacy ``.pkl`` fallback was removed because
+        ``pickle.load`` on an attacker-written file triggers arbitrary code
+        execution. The on-disk format has been migrated to JSON; any stray
+        ``.pkl`` is deleted without deserialisation and the caller rebuilds
+        the index from the vector store.
+        """
         json_path = self.index_path.replace(".pkl", ".json")
         if os.path.exists(json_path):
             try:
@@ -73,24 +80,17 @@ class PersistentBM25Index:
             except Exception as e:
                 logger.warning(f"BM25 JSON 索引加载失败: {e}")
                 return False
-        # Fallback: try legacy pickle format (will be migrated on next save)
-        if not os.path.exists(self.index_path):
-            return False
-        try:
-            import pickle
-            with open(self.index_path, "rb") as f:
-                data = pickle.load(f)
-            self.chunk_map = data["chunk_map"]
-            self._texts = data["_texts"]
-            self._tokenized = data["_tokenized"]
-            self.bm25 = BM25Okapi(self._tokenized)
-            logger.info(f"BM25 索引已从旧格式迁移，共 {len(self._texts)} 个文档")
-            # Migrate to JSON immediately
-            self.save()
-            return True
-        except Exception as e:
-            logger.warning(f"BM25 索引加载失败: {e}")
-            return False
+        # Legacy .pkl index: remove without deserialising (pickle RCE risk).
+        if os.path.exists(self.index_path):
+            try:
+                os.remove(self.index_path)
+                logger.warning(
+                    f"Removed legacy pickle index {self.index_path}; "
+                    f"index will be rebuilt from the vector store on next build."
+                )
+            except OSError as e:
+                logger.warning(f"Could not remove legacy pickle index {self.index_path}: {e}")
+        return False
 
     def search(self, query: str, top_k: int = 20) -> list[dict]:
         """BM25 检索"""

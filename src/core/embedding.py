@@ -57,16 +57,35 @@ class EmbeddingManager:
         # 对未缓存的文本调用 API
         if uncached_texts:
             api_results = self._call_api(uncached_texts)
+            # Safety (P0.6): Earlier versions filtered out None entries with
+            # ``[r for r in results if r is not None]``, which silently dropped
+            # positional alignment when the API returned fewer embeddings than
+            # requested. That corrupted the vector store because chunk N ended
+            # up with chunk M's embedding. Now we raise and let the caller
+            # skip the whole batch.
+            if len(api_results) != len(uncached_texts):
+                logger.error(
+                    f"Embedding API returned {len(api_results)} vectors for "
+                    f"{len(uncached_texts)} texts — refusing to write partial batch."
+                )
+                raise RuntimeError(
+                    f"Embedding batch incomplete: expected {len(uncached_texts)}, "
+                    f"got {len(api_results)}"
+                )
             for j, idx in enumerate(uncached_indices):
-                if j < len(api_results):
-                    results[idx] = api_results[j]
-                    # 存入缓存
-                    key = self._content_hash(uncached_texts[j])
-                    self._cache[key] = api_results[j]
-                    if len(self._cache) > self._cache_max_size:
-                        self._cache.popitem(last=False)  # 移除最旧的
+                results[idx] = api_results[j]
+                # 存入缓存
+                key = self._content_hash(uncached_texts[j])
+                self._cache[key] = api_results[j]
+                if len(self._cache) > self._cache_max_size:
+                    self._cache.popitem(last=False)  # 移除最旧的
 
-        return [r for r in results if r is not None]
+        # All slots must be filled by now; defensive check against silent misalignment
+        if any(r is None for r in results):
+            missing = [i for i, r in enumerate(results) if r is None]
+            logger.error(f"Embedding has unfilled slots at indices {missing}")
+            raise RuntimeError(f"Embedding has unfilled slots at indices {missing}")
+        return results
 
     def _call_api(self, texts: list[str]) -> list[list[float]]:
         """调用 embedding API"""
@@ -121,7 +140,12 @@ class VectorStore:
             batch_ids = ids[i:i+batch_size]
             batch_meta = metadatas[i:i+batch_size]
 
-            embeddings = self.embedding_manager.embed(batch_texts)
+            try:
+                embeddings = self.embedding_manager.embed(batch_texts)
+            except RuntimeError as e:
+                # P0.6: skip the failed batch but keep indexing the rest
+                logger.error(f"Embedding 批次 {i} 失败，跳过: {e}")
+                continue
             if not embeddings:
                 logger.error(f"Embedding 为空，跳过批次 {i}")
                 continue
@@ -136,7 +160,12 @@ class VectorStore:
 
     def vector_search(self, query: str, top_k: int = 20, where: dict = None) -> list[dict]:
         """向量检索"""
-        query_embedding = self.embedding_manager.embed([query])
+        try:
+            query_embedding = self.embedding_manager.embed([query])
+        except RuntimeError as e:
+            # P0.6: embedding failed — degrade gracefully to empty results
+            logger.error(f"Query embedding failed: {e}")
+            return []
         if not query_embedding:
             return []
 

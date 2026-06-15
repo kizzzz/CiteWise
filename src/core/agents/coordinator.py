@@ -49,16 +49,32 @@ class CoordinatorAgent(BaseAgent):
         if kwargs.get("base_url"):
             input_state["base_url"] = kwargs["base_url"]
 
-        # Apply API key override to LLM client if provided
+        # Apply API key override to LLM client if provided.
+        # Security (P0.2): set_override mutates the global LLM singleton, so a
+        # missing cleanup would leak user A's key to user B's subsequent call.
+        # We wrap graph.invoke in try/finally to guarantee clear_override even
+        # on exceptions. The cleaner long-term fix is to remove the global
+        # override mechanism entirely and pass api_key through input_state
+        # (planned for P1.1 / P1.5).
+        override_applied = False
         if kwargs.get("api_key"):
             try:
                 from src.core.llm import llm_client
                 llm_client.set_override(kwargs["api_key"], kwargs.get("base_url"))
+                override_applied = True
             except Exception:
                 pass
 
         config = {"configurable": {"thread_id": project_id or "default"}}
-        result = graph.invoke(input_state, config)
+        try:
+            result = graph.invoke(input_state, config)
+        finally:
+            if override_applied:
+                try:
+                    from src.core.llm import llm_client
+                    llm_client.clear_override()
+                except Exception as clear_err:
+                    logger.error(f"Failed to clear LLM override: {clear_err}")
 
         # 确保 thinking_steps 汇总
         result["thinking_steps"] = result.get("thinking_steps", []) + self.thinking_steps
