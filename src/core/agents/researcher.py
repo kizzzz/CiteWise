@@ -28,9 +28,10 @@ class ResearchAgent(BaseAgent):
         self.reset()
         self.think(f"检索关键词: {query[:60]}")
 
-        # 1. RAG 检索（传递 intent 用于意图感知检索）
-        where_filter = {"project_id": project_id} if project_id else None
-        chunks = hybrid_search(query, top_k=top_k, where=where_filter, intent=intent)
+        # 1. RAG 检索（retriever.hybrid_search 内部已按 paper_id 过滤项目内论文；
+        #    早期版本曾传 where={"project_id": ...} 但 chunk metadata 只有 paper_id，
+        #    与 retriever 的 paper_where 做 $and 后结果恒为 0，故不再传 where。）
+        chunks = hybrid_search(query, top_k=top_k, intent=intent)
         rag_content = format_chunks_with_citations(chunks) if chunks else ""
         sources = [
             {"title": c.get("paper_title", ""), "citation": c.get("citation", "")}

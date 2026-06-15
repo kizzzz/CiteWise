@@ -116,18 +116,22 @@ async def verify_api_key(req: ApiKeyVerifyRequest):
 
 @router.post("/apikeys/save")
 async def save_user_api_key_config(req: Request, user: dict = Depends(require_auth)):
-    """记录用户已配置 API Key（仅保存布尔标记，密钥本身由前端 localStorage 管理）"""
-    body = await req.json()
-    user_id = body.get("user_id", "")
-    has_key = bool(body.get("api_key", "").strip())
+    """记录用户已配置 API Key（仅保存布尔标记，密钥本身由前端 localStorage 管理）。
 
-    if not user_id:
-        return {"status": "ok", "message": "API Key 仅存储在本地"}
+    Security (P0.5): Always use the authenticated user_id from the JWT token.
+    Earlier versions read ``user_id`` from the request body, which allowed a
+    logged-in user to write the ``api_key configured`` flag against another
+    user's account (IDOR). The body field is now ignored.
+    """
+    body = await req.json()
+    # 强制使用 JWT 鉴权身份，忽略 body 中的 user_id（防止越权写入他人配置）
+    user_id = user["user_id"]
+    has_key = bool(body.get("api_key", "").strip())
 
     from src.core.memory import project_memory
 
-    user = project_memory.get_user_by_id(user_id)
-    if user:
+    target_user = project_memory.get_user_by_id(user_id)
+    if target_user:
         project_memory.update_user_api_key(user_id, "configured" if has_key else "")
         return {"status": "ok", "message": "API Key 配置已记录"}
 

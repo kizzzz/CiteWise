@@ -1,14 +1,16 @@
 """用户认证路由 — 注册/登录/获取当前用户
 
-纯 Python 实现，无 C 扩展依赖（bcrypt/passlib 已移除）。
+密码：PBKDF2-HMAC-SHA256（纯 Python，无 C 扩展依赖）。
+Token：PyJWT HS256（P0.3 替换了早期的手搓 base64+HMAC 实现，避免 alg/aud/iss 缺失与签名格式不规范带来的伪造风险）。
 """
 import hashlib
 import hmac
-import base64
-import json
 import logging
 import os
 import datetime
+
+import jwt as pyjwt
+from jwt import PyJWTError
 
 from dotenv import load_dotenv
 load_dotenv(override=False)
@@ -35,6 +37,12 @@ if JWT_SECRET in _INSECURE_DEFAULTS:
         f"Generate a secure random secret and set it in .env. "
         f"Example: python -c \"import secrets; print(secrets.token_hex(32))\""
     )
+# Minimum key length sanity check (HMAC-SHA256 should use ≥32 bytes)
+if len(JWT_SECRET.encode()) < 16:
+    raise RuntimeError(
+        "JWT_SECRET is too short. Use at least 32 bytes of high-entropy random data."
+    )
+JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_HOURS = 24
 
 # Password hashing — PBKDF2 with per-user salt, pure Python
@@ -56,35 +64,33 @@ def _verify_password(password: str, stored_hash: str, salt: str) -> bool:
 
 
 def _create_jwt_token(user_id: str, username: str) -> str:
-    """Create JWT token — pure Python base64, no PyJWT dependency"""
+    """Create JWT token using PyJWT (HS256, standard header with alg/typ)."""
     payload = {
         "user_id": user_id,
         "username": username,
         "exp": int((datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=JWT_EXPIRE_HOURS)).timestamp()),
+        "iat": int(datetime.datetime.now(datetime.timezone.utc).timestamp()),
     }
-    # Encode payload
-    payload_b64 = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
-    # Sign with HMAC
-    signature = hmac.new(JWT_SECRET.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
-    return f"{payload_b64}.{signature}"
+    return pyjwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
 def _decode_jwt_token(token: str) -> dict:
-    """Decode JWT token"""
+    """Decode and verify JWT token using PyJWT.
+
+    Strict verification: HS256 algorithm pinned, ``exp`` and ``user_id`` required.
+    Any signature/format/expiry failure returns ``{}`` so the auth dependency
+    can raise a uniform 401.
+    """
     try:
-        parts = token.split(".")
-        if len(parts) != 2:
-            return {}
-        payload_b64, signature = parts
-        # Verify signature
-        expected_sig = hmac.new(JWT_SECRET.encode(), payload_b64.encode(), hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(signature, expected_sig):
-            return {}
-        payload = json.loads(base64.urlsafe_b64decode(payload_b64))
-        # Check expiry
-        if payload.get("exp", 0) < datetime.datetime.now(datetime.timezone.utc).timestamp():
-            return {}
+        payload = pyjwt.decode(
+            token,
+            JWT_SECRET,
+            algorithms=[JWT_ALGORITHM],
+            options={"require": ["exp", "user_id"]},
+        )
         return payload
+    except PyJWTError:
+        return {}
     except Exception:
         return {}
 
