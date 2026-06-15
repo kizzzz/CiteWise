@@ -45,6 +45,23 @@ class LLMClient:
         """Get API key: override > default"""
         return override or OPENAI_API_KEY
 
+    _override_key = None
+    _override_url = None
+
+    def set_override(self, api_key: str, base_url: str = None):
+        """Temporarily override API key and base URL for user-provided keys."""
+        self._override_key = api_key
+        self._override_url = base_url
+        self.client = OpenAI(api_key=api_key, base_url=base_url or OPENAI_BASE_URL)
+        self._async_client = None  # Force re-creation
+
+    def clear_override(self):
+        """Reset to default API key."""
+        self._override_key = None
+        self._override_url = None
+        self.client = OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
+        self._async_client = None
+
     @property
     def async_client(self):
         """延迟初始化异步客户端"""

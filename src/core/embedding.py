@@ -201,7 +201,7 @@ class VectorStore:
                 output.append({
                     "chunk_id": results["ids"][i],
                     "text": results["documents"][i],
-                    "embedding": results["embeddings"][i] if results.get("embeddings") else [],
+                    "embedding": results["embeddings"][i] if results.get("embeddings") is not None else [],
                     "section_title": meta.get("section_title", ""),
                     "section_level": meta.get("section_level", "L2"),
                     "has_table": meta.get("has_table", False),

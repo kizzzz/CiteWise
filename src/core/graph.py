@@ -175,12 +175,14 @@ def writer_node(state: AgentState) -> dict:
     elif intent == "export":
         result = _handle_export(state)
     else:
-        section_name = _parse_section_name(user_input)
+        section_name = state.get("section_name") or _parse_section_name(user_input)
         section_topic = _parse_section_topic(user_input, section_name)
         result = _writer.generate_section(
             section_name, section_topic, research_result, project_id,
             state.get("framework", []),
             state.get("gen_params"),
+            state.get("system_prompt", ""),
+            state.get("requirements", ""),
         )
 
     thinking = list(state.get("thinking_steps", [])) + result.get("thinking_steps", [])
@@ -197,7 +199,7 @@ def writer_node(state: AgentState) -> dict:
 
 
 def analyst_node(state: AgentState) -> dict:
-    """Analyst — 数据分析 / 图表 / 框架推荐"""
+    """Analyst — 数据分析 / 图表 / 框架推荐 / 方法论章节"""
     start = _ts()
     intent = state.get("intent", "analyze")
     project_id = state.get("project_id")
@@ -207,7 +209,27 @@ def analyst_node(state: AgentState) -> dict:
         {"agent": "Analyst", "event": "start", "detail": f"分析: {intent}", "timestamp": start},
     ]
 
-    if intent in ("chart", "figures"):
+    research_result = {
+        "chunks": state.get("chunks", []),
+        "rag_content": state.get("rag_content", ""),
+        "web_results": state.get("web_results", []),
+        "sources": state.get("sources", []),
+    }
+
+    if intent == "generate":
+        section_name = state.get("section_name") or _parse_section_name(user_input)
+        section_topic = _parse_section_topic(user_input, section_name)
+        result = _analyst.process(
+            user_input, project_id,
+            intent="generate",
+            section_name=section_name,
+            section_topic=section_topic,
+            research_result=research_result,
+            gen_params=state.get("gen_params"),
+            system_prompt=state.get("system_prompt", ""),
+            requirements=state.get("requirements", ""),
+        )
+    elif intent in ("chart", "figures"):
         result = _analyst.process(user_input, project_id, intent=intent)
     else:
         result = _analyst.analyze_project(project_id or "")
@@ -235,6 +257,10 @@ def route_from_supervisor(state: AgentState) -> str:
 
 
 def route_after_research(state: AgentState) -> str:
+    # Respect user's explicit agent choice for section generation
+    agent_choice = state.get("agent_choice", "")
+    if agent_choice in ("writer", "analyst"):
+        return agent_choice
     next_agent = state.get("next_agent", "researcher")
     if next_agent == "writer":
         return "writer"
@@ -340,10 +366,13 @@ def build_graph():
 
 # 全局 graph 实例（延迟初始化）
 _graph = None
+_graph_lock = __import__('threading').Lock()
 
 
 def get_graph():
     global _graph
     if _graph is None:
-        _graph = build_graph()
+        with _graph_lock:
+            if _graph is None:
+                _graph = build_graph()
     return _graph

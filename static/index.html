@@ -10,6 +10,8 @@
     <link rel="stylesheet" href="vendor/animate.min.css">
     <script src="vendor/lucide.min.js"></script>
     <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.4/dist/purify.min.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Dancing+Script:wght@700&family=Inter:wght@300;400;500;600;700&family=Playfair+Display:ital,wght@0,700;1,700&display=swap');
 
@@ -341,6 +343,28 @@
             border-radius: 8px;
             margin-top: 6px;
         }
+
+        /* Markdown rendered content */
+        .md-render h1 { font-size: 1.25rem; font-weight: 700; margin: 1em 0 0.5em; color: #1e293b; }
+        .md-render h2 { font-size: 1.1rem; font-weight: 700; margin: 0.8em 0 0.4em; color: #1e293b; }
+        .md-render h3 { font-size: 1rem; font-weight: 600; margin: 0.6em 0 0.3em; color: #334155; }
+        .md-render h4 { font-size: 0.9rem; font-weight: 600; margin: 0.5em 0 0.2em; color: #475569; }
+        .md-render p { margin: 0.5em 0; line-height: 1.7; }
+        .md-render ul, .md-render ol { margin: 0.4em 0; padding-left: 1.5em; }
+        .md-render li { margin: 0.2em 0; line-height: 1.6; }
+        .md-render ul li { list-style-type: disc; }
+        .md-render ol li { list-style-type: decimal; }
+        .md-render blockquote { border-left: 3px solid #cbd5e1; padding-left: 1em; margin: 0.5em 0; color: #64748b; }
+        .md-render code { background: #f1f5f9; padding: 0.15em 0.4em; border-radius: 4px; font-size: 0.85em; color: #7c3aed; }
+        .md-render pre { background: #1e293b; color: #e2e8f0; padding: 1em; border-radius: 8px; overflow-x: auto; margin: 0.5em 0; }
+        .md-render pre code { background: none; color: inherit; padding: 0; font-size: 0.85em; }
+        .md-render table { border-collapse: collapse; margin: 0.5em 0; width: 100%; }
+        .md-render th, .md-render td { border: 1px solid #e2e8f0; padding: 0.5em 0.75em; text-align: left; font-size: 0.85rem; }
+        .md-render th { background: #f8fafc; font-weight: 600; }
+        .md-render hr { border: none; border-top: 1px solid #e2e8f0; margin: 1em 0; }
+        .md-render strong { font-weight: 600; color: #1e293b; }
+        .md-render em { font-style: italic; }
+        .md-render a { color: #3b82f6; text-decoration: underline; }
     </style>
 </head>
 <body class="flex">
@@ -450,6 +474,18 @@
 
         <!-- View 1: Chat -->
         <section id="chatView" class="view-section active">
+            <!-- History Panel (fixed-positioned, outside header overflow) -->
+            <div id="chatHistoryPanel" class="hidden fixed w-80 bg-white border border-slate-200 rounded-xl shadow-xl z-[100] max-h-[28rem] overflow-y-auto scroll-thin">
+                <div class="p-3 border-b border-slate-100 flex items-center justify-between">
+                    <span class="text-xs font-bold text-slate-500 uppercase tracking-wider">历史对话</span>
+                    <span id="chatHistoryCount" class="text-[10px] text-slate-400">0 个会话</span>
+                </div>
+                <div class="p-2 border-b border-slate-100">
+                    <input id="chatHistorySearch" type="text" placeholder="搜索对话..." class="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs outline-none focus:ring-2 focus:ring-indigo-500" oninput="filterChatHistory(this.value)">
+                </div>
+                <div id="chatHistoryList" class="p-2 space-y-1"></div>
+            </div>
+
             <header class="h-16 border-b border-slate-200 bg-white/50 backdrop-blur-md flex items-center justify-between px-8">
                 <div class="flex items-center gap-4">
                     <h2 class="font-bold text-slate-800">多 Agent 协同中心</h2>
@@ -459,6 +495,11 @@
                         <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-blue-500"></span>文献专家</span>
                         <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-green-500"></span>联网搜索</span>
                         <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-purple-500"></span>模型推理</span>
+                    </div>
+                    <div class="relative">
+                        <button id="chatHistoryBtn" onclick="toggleChatHistory(event)" class="flex items-center gap-2 px-3 py-2 bg-white border border-slate-200 rounded-lg font-bold text-slate-700 hover:border-indigo-500 hover:text-indigo-600 transition-all" title="历史对话">
+                            <i data-lucide="history" class="w-4 h-4"></i> 历史
+                        </button>
                     </div>
                     <button onclick="startNewSession()" class="flex items-center gap-2 px-3 py-2 bg-white border border-slate-200 rounded-lg font-bold text-slate-700 hover:border-indigo-500 hover:text-indigo-600 transition-all" title="开始新对话">
                         <i data-lucide="plus" class="w-4 h-4"></i> 新对话
@@ -472,9 +513,7 @@
             <div id="chatWindow" class="flex-1 chat-container p-10 space-y-10">
                 <div id="dynamicChatContent">
                     <div class="flex gap-4 mb-8">
-                        <div class="w-10 h-10 rounded-xl bg-slate-900 flex items-center justify-center text-white shadow-xl">
-                            <i data-lucide="cpu"></i>
-                        </div>
+                        <div class="w-10 h-10 rounded-full bg-gradient-to-br from-indigo-600 via-purple-500 to-blue-500 flex items-center justify-center shrink-0 shadow-md shadow-indigo-500/25 ring-2 ring-white/60"><svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 1.5L13.45 8.6Q13.55 9.15 14.05 9.3L21 12L14.05 14.7Q13.55 14.85 13.45 15.4L12 22.5L10.55 15.4Q10.45 14.85 9.95 14.7L3 12L9.95 9.3Q10.45 9.15 10.55 8.6Z" fill="white" fill-opacity="0.95"/><circle cx="12" cy="12" r="1.2" fill="white"/></svg></div>
                         <div class="max-w-[80%] bg-white border border-slate-200 p-6 rounded-3xl rounded-tl-none shadow-sm space-y-4">
                             <p class="text-slate-700 leading-relaxed text-sm">
                                 CiteWise V3 协同系统已就绪。我将自动调度 Agent 为您服务。您可以尝试询问："总结当前文献中关于 Transformer 的应用趋势，并补充最新的联网进展。"
@@ -592,7 +631,21 @@
         </section>
 
         <!-- View: Draft Management -->
-        <section id="draftView" class="view-section">
+        <section id="draftView" class="view-section relative">
+            <!-- Generation Progress Overlay -->
+            <div id="generationProgress" class="hidden absolute inset-0 z-50 flex items-center justify-center bg-white/90 backdrop-blur-sm">
+                <div class="text-center w-80">
+                    <div class="w-16 h-16 mx-auto mb-4 rounded-2xl bg-indigo-100 flex items-center justify-center">
+                        <i data-lucide="sparkles" class="w-8 h-8 text-indigo-600 gen-progress-icon"></i>
+                    </div>
+                    <h3 class="text-lg font-bold text-slate-800 mb-1 gen-progress-title">正在生成章节</h3>
+                    <p class="text-sm text-indigo-600 font-semibold mb-4 gen-progress-label">分析意图</p>
+                    <div class="w-full bg-slate-200 rounded-full h-2 overflow-hidden">
+                        <div class="gen-progress-bar bg-indigo-600 h-2 rounded-full transition-all duration-700 ease-out" style="width: 5%"></div>
+                    </div>
+                    <p class="text-xs text-slate-400 mt-3">请耐心等待，AI 正在创作中...</p>
+                </div>
+            </div>
             <div id="draftListView" class="flex flex-col h-full overflow-hidden">
                 <header class="h-16 border-b border-slate-200 bg-white flex items-center justify-between px-8">
                     <h2 class="font-bold text-slate-800">章节管理</h2>
@@ -755,6 +808,10 @@
                 <!-- Agent Eval Tab -->
                 <div id="agentEvalTab" class="flex-1 overflow-y-auto scroll-thin hidden">
                     <div class="p-8 space-y-8" id="hubEvalContent"></div>
+                </div>
+                <!-- Agent Detail Panel (shown when an agent card is clicked) -->
+                <div id="hubAgentDetail" class="flex-1 overflow-y-auto scroll-thin hidden">
+                    <div class="p-8" id="hubAgentDetailContent"></div>
                 </div>
             </div>
         </section>
@@ -1118,7 +1175,7 @@
                     <button onclick="verifyAndSaveApiKey()" id="keyVerifyBtn" class="flex-1 py-3 bg-blue-600 text-white rounded-2xl font-bold shadow-lg hover:bg-blue-700 transition-all">
                         验证
                     </button>
-                    <button onclick="deleteApiKey()" id="keyDeleteBtn" class="hidden py-3 px-5 bg-white border border-red-200 text-red-500 rounded-2xl font-bold hover:bg-red-50 transition-all">
+                    <button onclick="deleteApiKeyByIndex()" id="keyDeleteBtn" class="hidden py-3 px-5 bg-white border border-red-200 text-red-500 rounded-2xl font-bold hover:bg-red-50 transition-all">
                         删除
                     </button>
                 </div>
@@ -1150,9 +1207,16 @@
                     <button onclick="toggleModal('newDraftModal')"><i data-lucide="x"></i></button>
                 </div>
                 <input id="newDraftTitle" type="text" placeholder="章节名称" class="w-full border p-3 rounded-xl outline-none bg-slate-50">
+                <textarea id="draftRequirements" placeholder="章节要求（可选：简述、重点、格式等）" rows="2" class="w-full border p-3 rounded-xl outline-none bg-slate-50 text-sm resize-none"></textarea>
                 <!-- Generation Parameters -->
                 <div class="space-y-3 pt-2">
                     <div class="text-xs font-bold text-slate-400 uppercase tracking-wider">生成参数</div>
+                    <div>
+                        <label class="text-[10px] text-slate-500 font-bold">负责 Agent</label>
+                        <select id="draftAgent" class="w-full border border-slate-200 rounded-lg p-2 text-xs bg-white">
+                            <!-- Populated dynamically by populateDraftAgents() -->
+                        </select>
+                    </div>
                     <div class="grid grid-cols-3 gap-2">
                         <div>
                             <label class="text-[10px] text-slate-500 font-bold">写作风格</label>
@@ -1165,11 +1229,9 @@
                         </div>
                         <div>
                             <label class="text-[10px] text-slate-500 font-bold">目标字数</label>
-                            <select id="draftLength" class="w-full border border-slate-200 rounded-lg p-2 text-xs bg-white">
-                                <option value="500">500 字</option>
-                                <option value="1000" selected>1000 字</option>
-                                <option value="2000">2000 字</option>
-                            </select>
+                            <input id="draftLength" type="number" min="200" max="10000" step="100" value="1000"
+                                class="w-full border border-slate-200 rounded-lg p-2 text-xs bg-white"
+                                placeholder="输入目标字数（200-10000）">
                         </div>
                         <div>
                             <label class="text-[10px] text-slate-500 font-bold">引用密度</label>

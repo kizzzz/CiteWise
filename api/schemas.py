@@ -29,8 +29,11 @@ class SectionCreate(BaseModel):
     project_id: str = Field(..., min_length=1, description="项目ID")
     name: str = Field(..., min_length=1, max_length=100, description="章节名称")
     style: str = Field("学术正式", description="写作风格：学术正式/通俗/报告/严谨")
-    target_length: int = Field(1000, description="目标字数：500/1000/2000")
+    target_length: int = Field(1000, description="目标字数")
     citation_density: str = Field("正常", description="引用密度：高/正常/低")
+    agent: str = Field("writer", description="负责 Agent ID")
+    system_prompt: str = Field("", description="用户自建 Agent 的系统提示词")
+    requirements: str = Field("", description="章节要求：简述、重点、格式等")
 
 
 class SectionUpdate(BaseModel):
@@ -89,3 +92,7 @@ class FormatApplyRequest(BaseModel):
     project_id: str = Field(..., min_length=1, description="项目ID")
     section_name: str = Field(..., min_length=1, description="章节名称")
     suggestions: list[dict] = Field(..., min_length=1, description="用户选中的格式修改项")
+
+
+class SessionRenameRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=200, description="新标题")

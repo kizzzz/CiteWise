@@ -21,30 +21,46 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # === In-memory rate limiter ===
+import threading
+
 _rate_limit_store: dict[str, list[float]] = defaultdict(list)
+_rate_limit_lock = threading.Lock()
 RATE_LIMIT_MAX_REQUESTS = 30
 RATE_LIMIT_WINDOW_SECONDS = 60
 MAX_TRACKED_IPS = 10000
+_last_cleanup = time.time()
+CLEANUP_INTERVAL = 60  # seconds
+
+
+def _get_client_ip(request: Request) -> str:
+    """Extract client IP, respecting X-Forwarded-For header."""
+    xff = request.headers.get("X-Forwarded-For", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
 
 
 def _is_rate_limited(client_ip: str) -> bool:
-    """Check whether a client IP has exceeded the rate limit."""
+    """Check whether a client IP has exceeded the rate limit. Thread-safe."""
+    global _last_cleanup
     now = time.time()
     window_start = now - RATE_LIMIT_WINDOW_SECONDS
 
-    # Evict old entries if store is too large
-    if len(_rate_limit_store) > MAX_TRACKED_IPS:
-        stale = [ip for ip, times in _rate_limit_store.items()
-                 if not times or times[-1] < window_start]
-        for ip in stale:
-            del _rate_limit_store[ip]
+    with _rate_limit_lock:
+        # Periodic cleanup of stale entries
+        if now - _last_cleanup > CLEANUP_INTERVAL:
+            stale = [ip for ip, times in _rate_limit_store.items()
+                     if not times or times[-1] < window_start]
+            for ip in stale:
+                del _rate_limit_store[ip]
+            _last_cleanup = now
 
-    request_times = _rate_limit_store[client_ip]
-    request_times[:] = [t for t in request_times if t > window_start]
-    if len(request_times) >= RATE_LIMIT_MAX_REQUESTS:
-        return True
-    request_times.append(now)
-    return False
+        request_times = _rate_limit_store[client_ip]
+        request_times[:] = [t for t in request_times if t > window_start]
+        if len(request_times) >= RATE_LIMIT_MAX_REQUESTS:
+            return True
+        request_times.append(now)
+        return False
 
 
 @asynccontextmanager
@@ -95,7 +111,7 @@ async def security_headers(request: Request, call_next):
 # === Rate limiting middleware ===
 @app.middleware("http")
 async def rate_limit_middleware(request: Request, call_next):
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = _get_client_ip(request)
     if _is_rate_limited(client_ip):
         return JSONResponse(
             status_code=429,

@@ -38,6 +38,24 @@ class CoordinatorAgent(BaseAgent):
             input_state["section_name"] = kwargs["section_name"]
         if kwargs.get("gen_params"):
             input_state["gen_params"] = kwargs["gen_params"]
+        if kwargs.get("agent_choice"):
+            input_state["agent_choice"] = kwargs["agent_choice"]
+        if kwargs.get("system_prompt"):
+            input_state["system_prompt"] = kwargs["system_prompt"]
+        if kwargs.get("requirements"):
+            input_state["requirements"] = kwargs["requirements"]
+        if kwargs.get("api_key"):
+            input_state["api_key"] = kwargs["api_key"]
+        if kwargs.get("base_url"):
+            input_state["base_url"] = kwargs["base_url"]
+
+        # Apply API key override to LLM client if provided
+        if kwargs.get("api_key"):
+            try:
+                from src.core.llm import llm_client
+                llm_client.set_override(kwargs["api_key"], kwargs.get("base_url"))
+            except Exception:
+                pass
 
         config = {"configurable": {"thread_id": project_id or "default"}}
         result = graph.invoke(input_state, config)

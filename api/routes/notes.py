@@ -7,7 +7,7 @@ import math
 from fastapi import APIRouter, HTTPException, Depends, Query
 from pydantic import BaseModel
 
-from api.deps import require_auth
+from api.deps import require_auth, verify_project_owner
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -89,6 +89,7 @@ async def _link_papers_for_note(note_content: str, project_id: str) -> list[dict
 
 @router.post("/notes")
 async def create_note(body: NoteCreate, user: dict = Depends(require_auth)):
+    verify_project_owner(body.project_id, user["user_id"])
     from src.core.memory import project_memory
 
     if not body.content.strip():
@@ -120,65 +121,20 @@ async def list_notes(
     note_type: str = Query(None),
     user: dict = Depends(require_auth),
 ):
+    verify_project_owner(project_id, user["user_id"])
     from src.core.memory import project_memory
     project_memory.seed_default_types(project_id)
     return project_memory.get_notes(project_id, limit, offset, note_type=note_type)
 
 
-@router.get("/notes/{note_id}")
-async def get_note(note_id: str, user: dict = Depends(require_auth)):
-    from src.core.memory import project_memory
-    note = project_memory.get_note(note_id)
-    if not note:
-        raise HTTPException(status_code=404, detail="笔记不存在")
-    return note
-
-
-@router.put("/notes/{note_id}")
-async def update_note(note_id: str, body: NoteUpdate, user: dict = Depends(require_auth)):
-    from src.core.memory import project_memory
-    existing = project_memory.get_note(note_id)
-    if not existing:
-        raise HTTPException(status_code=404, detail="笔记不存在")
-    project_memory.update_note(
-        note_id, body.content, body.source_url, body.note_type
-    )
-    return project_memory.get_note(note_id)
-
-
-@router.delete("/notes/{note_id}")
-async def delete_note(note_id: str, user: dict = Depends(require_auth)):
-    from src.core.memory import project_memory
-    ok = project_memory.delete_note(note_id)
-    if not ok:
-        raise HTTPException(status_code=404, detail="笔记不存在")
-    return {"status": "ok", "note_id": note_id}
-
-
-@router.post("/notes/{note_id}/link-papers")
-async def relink_papers(note_id: str, user: dict = Depends(require_auth)):
-    """手动触发 AI 关联（重跑推荐）"""
-    from src.core.memory import project_memory
-    note = project_memory.get_note(note_id)
-    if not note:
-        raise HTTPException(status_code=404, detail="笔记不存在")
-
-    linked_papers = await _link_papers_for_note(note["content"], note["project_id"])
-    paper_ids = [p["paper_id"] for p in linked_papers]
-    project_memory.update_note_linked_papers(note_id, paper_ids)
-
-    updated = project_memory.get_note(note_id)
-    updated["linked_papers"] = linked_papers
-    return updated
-
-
-# ===== 笔记类型 CRUD =====
+# ===== 笔记类型 CRUD（固定路径，必须在 /notes/{note_id} 之前注册）=====
 
 @router.get("/notes/types")
 async def get_note_types(
     project_id: str = Query(...),
     user: dict = Depends(require_auth),
 ):
+    verify_project_owner(project_id, user["user_id"])
     from src.core.memory import project_memory
     project_memory.seed_default_types(project_id)
     return project_memory.get_note_types(project_id)
@@ -186,6 +142,7 @@ async def get_note_types(
 
 @router.post("/notes/types")
 async def create_note_type(body: NoteTypeCreate, user: dict = Depends(require_auth)):
+    verify_project_owner(body.project_id, user["user_id"])
     from src.core.memory import project_memory
     if not body.name.strip():
         raise HTTPException(status_code=400, detail="类型名称不能为空")
@@ -196,77 +153,44 @@ async def create_note_type(body: NoteTypeCreate, user: dict = Depends(require_au
 @router.put("/notes/types/{type_id}")
 async def update_note_type(type_id: str, body: NoteTypeUpdate, user: dict = Depends(require_auth)):
     from src.core.memory import project_memory
-    ok = project_memory.rename_note_type(type_id, body.name, body.color)
-    if not ok:
+    existing = project_memory.get_note_type(type_id)
+    if not existing:
         raise HTTPException(status_code=404, detail="类型不存在")
+    verify_project_owner(existing["project_id"], user["user_id"])
+    ok = project_memory.rename_note_type(type_id, body.name, body.color)
     return {"status": "ok"}
 
 
 @router.delete("/notes/types/{type_id}")
 async def delete_note_type(type_id: str, user: dict = Depends(require_auth)):
     from src.core.memory import project_memory
-    ok = project_memory.delete_note_type(type_id)
-    if not ok:
+    existing = project_memory.get_note_type(type_id)
+    if not existing:
         raise HTTPException(status_code=404, detail="类型不存在")
+    verify_project_owner(existing["project_id"], user["user_id"])
+    ok = project_memory.delete_note_type(type_id)
     return {"status": "ok"}
 
 
-# ===== 排序与置顶 =====
-
-@router.post("/notes/{note_id}/pin")
-async def toggle_pin(note_id: str, user: dict = Depends(require_auth)):
-    from src.core.memory import project_memory
-    result = project_memory.toggle_pin(note_id)
-    if "error" in result:
-        raise HTTPException(status_code=404, detail="笔记不存在")
-    return result
-
+# ===== 排序与置顶（固定路径，必须在 /notes/{note_id} 之前注册）=====
 
 @router.post("/notes/reorder")
 async def reorder_notes(body: ReorderBody, user: dict = Depends(require_auth)):
     from src.core.memory import project_memory
+    # Verify ownership: check first note belongs to user's project
+    if body.ordered_ids:
+        note = project_memory.get_note(body.ordered_ids[0])
+        if note:
+            verify_project_owner(note["project_id"], user["user_id"])
     project_memory.reorder_notes(body.ordered_ids)
     return {"status": "ok"}
 
 
-# ===== AI 自动归类 =====
-
-@router.post("/notes/{note_id}/suggest-type")
-async def suggest_type(note_id: str, user: dict = Depends(require_auth)):
-    from src.core.memory import project_memory
-    from src.core.llm import llm_client
-
-    note = project_memory.get_note(note_id)
-    if not note:
-        raise HTTPException(status_code=404, detail="笔记不存在")
-
-    types = project_memory.get_note_types(note["project_id"])
-    type_names = [t["name"] for t in types]
-    if not type_names:
-        return {"suggested_type": "通用笔记", "confidence": 0.5}
-
-    prompt = (
-        f"根据以下笔记内容，从给定的分类中选择最匹配的一个。\n"
-        f"可用分类: {json.dumps(type_names, ensure_ascii=False)}\n"
-        f"笔记内容: {note['content'][:500]}\n\n"
-        f"返回 JSON: {{\"type\": \"最匹配的分类名\", \"confidence\": 0.0-1.0}}\n"
-        f"只返回 JSON，不要其他内容。"
-    )
-    try:
-        result = await llm_client.achat_json(
-            [{"role": "user", "content": prompt}],
-            temperature=0.1, max_tokens=200
-        )
-        suggested = result.get("type", "通用笔记")
-        confidence = result.get("confidence", 0.5)
-        return {"suggested_type": suggested, "confidence": round(confidence, 2)}
-    except Exception as e:
-        logger.warning(f"AI 分类失败: {e}")
-        return {"suggested_type": "通用笔记", "confidence": 0.0}
-
+# ===== AI 自动归类（固定路径，必须在 /notes/{note_id} 之前注册）=====
 
 @router.post("/notes/batch-classify")
 async def batch_classify(body: BatchClassifyBody, user: dict = Depends(require_auth)):
+    verify_project_owner(body.project_id, user["user_id"])
     from src.core.memory import project_memory
     from src.core.llm import llm_client
 
@@ -325,7 +249,7 @@ async def batch_classify(body: BatchClassifyBody, user: dict = Depends(require_a
     return {"classified": 0}
 
 
-# ===== 笔记合并 =====
+# ===== 笔记合并（固定路径，必须在 /notes/{note_id} 之前注册）=====
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
     dot = sum(x * y for x, y in zip(a, b))
@@ -338,6 +262,7 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
 
 @router.post("/notes/merge-suggestions")
 async def merge_suggestions(body: BatchClassifyBody, user: dict = Depends(require_auth)):
+    verify_project_owner(body.project_id, user["user_id"])
     from src.core.memory import project_memory
     from src.core.embedding import embedding_manager
 
@@ -365,7 +290,112 @@ async def merge_suggestions(body: BatchClassifyBody, user: dict = Depends(requir
 @router.post("/notes/merge")
 async def merge_notes(body: MergeBody, user: dict = Depends(require_auth)):
     from src.core.memory import project_memory
+    # Verify ownership of keep note
+    keep = project_memory.get_note(body.keep_id)
+    if not keep:
+        raise HTTPException(status_code=404, detail="目标笔记不存在")
+    verify_project_owner(keep["project_id"], user["user_id"])
     result = project_memory.merge_notes(body.keep_id, body.absorb_ids)
     if "error" in result:
         raise HTTPException(status_code=404, detail=result["error"])
     return result
+
+
+# ===== 参数化路由（必须在所有固定路径之后注册）=====
+
+@router.get("/notes/{note_id}")
+async def get_note(note_id: str, user: dict = Depends(require_auth)):
+    from src.core.memory import project_memory
+    note = project_memory.get_note(note_id)
+    if not note:
+        raise HTTPException(status_code=404, detail="笔记不存在")
+    verify_project_owner(note["project_id"], user["user_id"])
+    return note
+
+
+@router.put("/notes/{note_id}")
+async def update_note(note_id: str, body: NoteUpdate, user: dict = Depends(require_auth)):
+    from src.core.memory import project_memory
+    existing = project_memory.get_note(note_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="笔记不存在")
+    verify_project_owner(existing["project_id"], user["user_id"])
+    project_memory.update_note(
+        note_id, body.content, body.source_url, body.note_type
+    )
+    return project_memory.get_note(note_id)
+
+
+@router.delete("/notes/{note_id}")
+async def delete_note(note_id: str, user: dict = Depends(require_auth)):
+    from src.core.memory import project_memory
+    note = project_memory.get_note(note_id)
+    if not note:
+        raise HTTPException(status_code=404, detail="笔记不存在")
+    verify_project_owner(note["project_id"], user["user_id"])
+    ok = project_memory.delete_note(note_id)
+    return {"status": "ok", "note_id": note_id}
+
+
+@router.post("/notes/{note_id}/link-papers")
+async def relink_papers(note_id: str, user: dict = Depends(require_auth)):
+    """手动触发 AI 关联（重跑推荐）"""
+    from src.core.memory import project_memory
+    note = project_memory.get_note(note_id)
+    if not note:
+        raise HTTPException(status_code=404, detail="笔记不存在")
+    verify_project_owner(note["project_id"], user["user_id"])
+
+    linked_papers = await _link_papers_for_note(note["content"], note["project_id"])
+    paper_ids = [p["paper_id"] for p in linked_papers]
+    project_memory.update_note_linked_papers(note_id, paper_ids)
+
+    updated = project_memory.get_note(note_id)
+    updated["linked_papers"] = linked_papers
+    return updated
+
+
+@router.post("/notes/{note_id}/pin")
+async def toggle_pin(note_id: str, user: dict = Depends(require_auth)):
+    from src.core.memory import project_memory
+    note = project_memory.get_note(note_id)
+    if not note:
+        raise HTTPException(status_code=404, detail="笔记不存在")
+    verify_project_owner(note["project_id"], user["user_id"])
+    result = project_memory.toggle_pin(note_id)
+    return result
+
+
+@router.post("/notes/{note_id}/suggest-type")
+async def suggest_type(note_id: str, user: dict = Depends(require_auth)):
+    from src.core.memory import project_memory
+    from src.core.llm import llm_client
+
+    note = project_memory.get_note(note_id)
+    if not note:
+        raise HTTPException(status_code=404, detail="笔记不存在")
+    verify_project_owner(note["project_id"], user["user_id"])
+
+    types = project_memory.get_note_types(note["project_id"])
+    type_names = [t["name"] for t in types]
+    if not type_names:
+        return {"suggested_type": "通用笔记", "confidence": 0.5}
+
+    prompt = (
+        f"根据以下笔记内容，从给定的分类中选择最匹配的一个。\n"
+        f"可用分类: {json.dumps(type_names, ensure_ascii=False)}\n"
+        f"笔记内容: {note['content'][:500]}\n\n"
+        f"返回 JSON: {{\"type\": \"最匹配的分类名\", \"confidence\": 0.0-1.0}}\n"
+        f"只返回 JSON，不要其他内容。"
+    )
+    try:
+        result = await llm_client.achat_json(
+            [{"role": "user", "content": prompt}],
+            temperature=0.1, max_tokens=200
+        )
+        suggested = result.get("type", "通用笔记")
+        confidence = result.get("confidence", 0.5)
+        return {"suggested_type": suggested, "confidence": round(confidence, 2)}
+    except Exception as e:
+        logger.warning(f"AI 分类失败: {e}")
+        return {"suggested_type": "通用笔记", "confidence": 0.0}

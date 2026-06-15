@@ -78,6 +78,23 @@ class GlobalProfile:
         }
 
 
+class _ConnContext:
+    """Wraps sqlite3.Connection to auto-close on context exit."""
+    def __init__(self, conn):
+        self._conn = conn
+
+    def __enter__(self):
+        return self._conn
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        try:
+            if exc_type:
+                self._conn.rollback()
+        finally:
+            self._conn.close()
+        return False
+
+
 class ProjectMemory:
     """Layer 2: 项目记忆（SQLite）"""
 
@@ -85,12 +102,13 @@ class ProjectMemory:
         self.db_path = DB_PATH
         self._init_db()
 
-    def _get_conn(self) -> sqlite3.Connection:
+    def _get_conn(self):
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=5000")
-        return conn
+        # Wrap to auto-close on context exit
+        return _ConnContext(conn)
 
     def _init_db(self):
         with self._get_conn() as conn:
@@ -239,30 +257,43 @@ class ProjectMemory:
                 conn.execute("ALTER TABLE quick_notes ADD COLUMN sort_order INTEGER DEFAULT 0")
             except Exception:
                 pass
+            try:
+                conn.execute("ALTER TABLE chat_messages ADD COLUMN metadata TEXT DEFAULT '{}'")
+            except Exception:
+                pass
             conn.commit()
 
     # --- 项目管理 ---
-    def create_project(self, name: str, topic: str = "") -> str:
+    def create_project(self, name: str, topic: str = "", user_id: str = "") -> str:
         pid = f"proj_{uuid.uuid4().hex[:8]}"
         with self._get_conn() as conn:
-            conn.execute("INSERT INTO projects (id, name, topic) VALUES (?, ?, ?)",
-                         (pid, name, topic))
+            conn.execute("INSERT INTO projects (id, name, topic, user_id) VALUES (?, ?, ?, ?)",
+                         (pid, name, topic, user_id))
             conn.commit()
         return pid
 
-    def get_project(self, project_id: str) -> Optional[dict]:
+    def get_project(self, project_id: str, user_id: str = "") -> Optional[dict]:
         with self._get_conn() as conn:
-            row = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
+            if user_id:
+                row = conn.execute("SELECT * FROM projects WHERE id=? AND user_id=?", (project_id, user_id)).fetchone()
+            else:
+                row = conn.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
         return dict(row) if row else None
 
-    def list_projects(self) -> list[dict]:
+    def list_projects(self, user_id: str = "") -> list[dict]:
         with self._get_conn() as conn:
-            rows = conn.execute("SELECT * FROM projects ORDER BY created_at DESC").fetchall()
+            if user_id:
+                rows = conn.execute("SELECT * FROM projects WHERE user_id=? ORDER BY created_at DESC", (user_id,)).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM projects ORDER BY created_at DESC").fetchall()
         return [dict(r) for r in rows]
 
-    def delete_project(self, project_id: str) -> bool:
+    def delete_project(self, project_id: str, user_id: str = "") -> bool:
         with self._get_conn() as conn:
-            row = conn.execute("SELECT id FROM projects WHERE id=?", (project_id,)).fetchone()
+            if user_id:
+                row = conn.execute("SELECT id FROM projects WHERE id=? AND user_id=?", (project_id, user_id)).fetchone()
+            else:
+                row = conn.execute("SELECT id FROM projects WHERE id=?", (project_id,)).fetchone()
             if not row:
                 return False
             conn.execute("DELETE FROM figures WHERE project_id=?", (project_id,))
@@ -313,6 +344,11 @@ class ProjectMemory:
             )
             conn.commit()
 
+    def get_section_by_id(self, section_id: str) -> Optional[dict]:
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT * FROM generated_sections WHERE id=?", (section_id,)).fetchone()
+        return dict(row) if row else None
+
     def get_paper_count(self, project_id: str) -> int:
         with self._get_conn() as conn:
             row = conn.execute("SELECT COUNT(*) as cnt FROM papers WHERE project_id=?",
@@ -359,7 +395,7 @@ class ProjectMemory:
 
     # --- 生成记录 ---
     def save_section(self, project_id: str, section_name: str,
-                     content: str, citations: list = None):
+                     content: str, citations: list = None) -> str:
         sid = f"sec_{uuid.uuid4().hex[:8]}"
         with self._get_conn() as conn:
             conn.execute(
@@ -369,6 +405,7 @@ class ProjectMemory:
                  json.dumps(citations or [], ensure_ascii=False))
             )
             conn.commit()
+        return sid
 
     def get_sections(self, project_id: str) -> list[dict]:
         with self._get_conn() as conn:
@@ -550,6 +587,11 @@ class ProjectMemory:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_note_type(self, type_id: str) -> Optional[dict]:
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT * FROM note_types WHERE id=?", (type_id,)).fetchone()
+        return dict(row) if row else None
+
     def rename_note_type(self, type_id: str, name: str = None, color: str = None) -> bool:
         sets, params = [], []
         if name is not None:
@@ -680,9 +722,22 @@ class ProjectMemory:
         return dict(row) if row else None
 
     def update_user_api_key(self, user_id: str, api_key: str):
+        """Store API key (encrypted) — only saves a marker if key is provided"""
+        import hashlib
+        # Only store a hash marker, not the actual key
+        key_marker = hashlib.sha256(api_key.encode()).hexdigest()[:16] if api_key else ""
         with self._get_conn() as conn:
-            conn.execute("UPDATE users SET api_key=? WHERE id=?", (api_key, user_id))
+            conn.execute("UPDATE users SET api_key=?, api_key_encrypted=? WHERE id=?",
+                         (key_marker if api_key else "", "yes" if api_key else "", user_id))
             conn.commit()
+
+    def get_user_api_key(self, user_id: str) -> str:
+        """Check if user has configured an API key (returns marker, not the actual key)"""
+        with self._get_conn() as conn:
+            row = conn.execute("SELECT api_key_encrypted FROM users WHERE id=?", (user_id,)).fetchone()
+        if row and row["api_key_encrypted"]:
+            return "configured"
+        return ""
 
     # --- 对话会话管理 ---
     def create_session(self, project_id: str, title: str = "") -> str:
@@ -713,6 +768,16 @@ class ProjectMemory:
             ).fetchone()
         return dict(row) if row else None
 
+    def update_session_title(self, session_id: str, title: str) -> bool:
+        """更新会话标题"""
+        with self._get_conn() as conn:
+            cursor = conn.execute(
+                "UPDATE chat_sessions SET title=? WHERE id=?",
+                (title, session_id)
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
     def delete_session(self, session_id: str):
         """删除会话及其消息"""
         with self._get_conn() as conn:
@@ -721,14 +786,16 @@ class ProjectMemory:
             conn.commit()
 
     def save_message(self, session_id: str, project_id: str,
-                     role: str, content: str, intent: str = ""):
-        """保存一条对话消息"""
+                     role: str, content: str, intent: str = "",
+                     metadata: dict = None):
+        """保存一条对话消息，metadata 可存放 agent_timeline / verification 等富数据"""
         mid = f"msg_{uuid.uuid4().hex[:8]}"
+        meta_json = json.dumps(metadata or {}, ensure_ascii=False)
         with self._get_conn() as conn:
             conn.execute(
-                "INSERT INTO chat_messages (id, session_id, project_id, role, content, intent) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (mid, session_id, project_id, role, content, intent)
+                "INSERT INTO chat_messages (id, session_id, project_id, role, content, intent, metadata) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (mid, session_id, project_id, role, content, intent, meta_json)
             )
             conn.commit()
 
@@ -736,12 +803,19 @@ class ProjectMemory:
         """获取会话的最近 N 条消息"""
         with self._get_conn() as conn:
             rows = conn.execute(
-                "SELECT role, content, intent FROM chat_messages "
+                "SELECT role, content, intent, metadata FROM chat_messages "
                 "WHERE session_id=? ORDER BY created_at DESC LIMIT ?",
                 (session_id, limit)
             ).fetchall()
-        # Return in chronological order (oldest first)
-        messages = [dict(r) for r in reversed(rows)]
+        # Return in chronological order (oldest first), parse metadata JSON
+        messages = []
+        for r in reversed(rows):
+            msg = {"role": r["role"], "content": r["content"], "intent": r["intent"]}
+            try:
+                msg["metadata"] = json.loads(r["metadata"]) if r["metadata"] else {}
+            except (json.JSONDecodeError, TypeError):
+                msg["metadata"] = {}
+            messages.append(msg)
         return messages
 
 

@@ -1,7 +1,7 @@
 """BM25 持久化索引 — 支持序列化保存/加载和增量添加"""
 import re
 import os
-import pickle
+import json
 import logging
 from rank_bm25 import BM25Okapi
 import jieba
@@ -43,31 +43,50 @@ class PersistentBM25Index:
             logger.info(f"BM25 增量添加 {len(chunks)} chunks，总计 {len(self._texts)} 个文档")
 
     def save(self):
-        """序列化索引到磁盘"""
+        """序列化索引到磁盘 (JSON format, safe from code execution)"""
         if not self.bm25:
             return
         os.makedirs(os.path.dirname(self.index_path), exist_ok=True)
+        json_path = self.index_path.replace(".pkl", ".json")
         data = {
             "chunk_map": self.chunk_map,
             "_texts": self._texts,
             "_tokenized": self._tokenized,
         }
-        with open(self.index_path, "wb") as f:
-            pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
-        logger.info(f"BM25 索引已保存到 {self.index_path}")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        logger.info(f"BM25 索引已保存到 {json_path}")
 
     def load(self) -> bool:
         """从磁盘加载索引，成功返回 True"""
+        json_path = self.index_path.replace(".pkl", ".json")
+        if os.path.exists(json_path):
+            try:
+                with open(json_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                self.chunk_map = data["chunk_map"]
+                self._texts = data["_texts"]
+                self._tokenized = data["_tokenized"]
+                self.bm25 = BM25Okapi(self._tokenized)
+                logger.info(f"BM25 索引已从 {json_path} 加载，共 {len(self._texts)} 个文档")
+                return True
+            except Exception as e:
+                logger.warning(f"BM25 JSON 索引加载失败: {e}")
+                return False
+        # Fallback: try legacy pickle format (will be migrated on next save)
         if not os.path.exists(self.index_path):
             return False
         try:
+            import pickle
             with open(self.index_path, "rb") as f:
                 data = pickle.load(f)
             self.chunk_map = data["chunk_map"]
             self._texts = data["_texts"]
             self._tokenized = data["_tokenized"]
             self.bm25 = BM25Okapi(self._tokenized)
-            logger.info(f"BM25 索引已从 {self.index_path} 加载，共 {len(self._texts)} 个文档")
+            logger.info(f"BM25 索引已从旧格式迁移，共 {len(self._texts)} 个文档")
+            # Migrate to JSON immediately
+            self.save()
             return True
         except Exception as e:
             logger.warning(f"BM25 索引加载失败: {e}")

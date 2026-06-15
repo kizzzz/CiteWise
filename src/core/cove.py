@@ -14,6 +14,20 @@ from src.core.llm import llm_client
 logger = logging.getLogger(__name__)
 
 
+def _short_error(e: Exception) -> str:
+    """Extract a short human-readable error reason."""
+    msg = str(e)
+    if "429" in msg or "rate" in msg.lower() or "访问量过大" in msg:
+        return "API 限流，验证调用被拒绝"
+    if "timeout" in msg.lower() or "timed out" in msg.lower():
+        return "验证调用超时"
+    if "401" in msg or "403" in msg:
+        return "API 密钥无效或无权限"
+    if "JSON" in msg or "json" in msg:
+        return "LLM 返回格式异常"
+    return msg[:60]
+
+
 # ========== Prompt 模板 ==========
 
 EXTRACT_CLAIMS_PROMPT = """## 任务：从文本中提取可验证的事实性声明
@@ -73,10 +87,10 @@ VERIFY_CLAIMS_PROMPT = """## 任务：验证以下声明的准确性
 
 # ========== 核心函数 ==========
 
-def extract_claims(content: str) -> list[dict]:
+def extract_claims(content: str) -> tuple[list[dict], Optional[str]]:
     """从生成内容中提取可验证的声明"""
     if not content or len(content) < 50:
-        return []
+        return [], None
 
     prompt = EXTRACT_CLAIMS_PROMPT.format(content=content[:4000])
     messages = [
@@ -88,10 +102,10 @@ def extract_claims(content: str) -> list[dict]:
         result = llm_client.chat_json(messages, temperature=0.2)
         claims = result.get("claims", [])
         logger.info(f"CoVe 提取到 {len(claims)} 个声明")
-        return claims
+        return claims, None
     except Exception as e:
         logger.error(f"CoVe 声明提取失败: {e}")
-        return []
+        return [], f"声明提取失败: {_short_error(e)}"
 
 
 def verify_claims(claims: list[dict], rag_chunks: list[dict]) -> dict:
@@ -138,6 +152,7 @@ def verify_claims(claims: list[dict], rag_chunks: list[dict]) -> dict:
             "verifications": [],
             "overall_score": 0.0,
             "summary": f"验证过程出错: {str(e)[:100]}",
+            "error": f"验证调用失败: {_short_error(e)}",
         }
 
 
@@ -151,10 +166,20 @@ def run_cove(content: str, rag_chunks: list[dict]) -> dict:
             "overall_score": float,
             "summary": str,
             "flagged_claims": [...]  # 有问题的声明
+            "error": str or None     # 流程错误信息
         }
     """
     # 1. 提取声明
-    claims = extract_claims(content)
+    claims, extract_error = extract_claims(content)
+    if extract_error:
+        return {
+            "claims": [],
+            "verifications": [],
+            "overall_score": 0.0,
+            "summary": extract_error,
+            "flagged_claims": [],
+            "error": extract_error,
+        }
     if not claims:
         return {
             "claims": [],
@@ -162,11 +187,13 @@ def run_cove(content: str, rag_chunks: list[dict]) -> dict:
             "overall_score": 1.0,
             "summary": "内容过短或无可验证声明",
             "flagged_claims": [],
+            "error": None,
         }
 
     # 2. 验证
     verification = verify_claims(claims, rag_chunks)
     verifications = verification.get("verifications", [])
+    verify_error = verification.get("error")
 
     # 3. 标记有问题的声明
     flagged = []
@@ -185,15 +212,16 @@ def run_cove(content: str, rag_chunks: list[dict]) -> dict:
         "overall_score": verification.get("overall_score", 0.0),
         "summary": verification.get("summary", ""),
         "flagged_claims": flagged,
+        "error": verify_error,
     }
 
 
 # ========== 异步版本（用于流式管线）==========
 
-async def async_extract_claims(content: str, api_key: str = None, base_url: str = None) -> list[dict]:
+async def async_extract_claims(content: str, api_key: str = None, base_url: str = None) -> tuple[list[dict], Optional[str]]:
     """异步提取可验证的声明"""
     if not content or len(content) < 50:
-        return []
+        return [], None
 
     prompt = EXTRACT_CLAIMS_PROMPT.format(content=content[:4000])
     messages = [
@@ -206,10 +234,10 @@ async def async_extract_claims(content: str, api_key: str = None, base_url: str 
         result = await llm_client.achat_json(messages, temperature=0.2, max_tokens=2000)
         claims = result.get("claims", [])
         logger.info(f"CoVe 异步提取到 {len(claims)} 个声明")
-        return claims
+        return claims, None
     except Exception as e:
         logger.error(f"CoVe 异步声明提取失败: {e}")
-        return []
+        return [], f"声明提取失败: {_short_error(e)}"
 
 
 async def async_verify_claims(claims: list[dict], rag_chunks: list[dict]) -> dict:
@@ -246,6 +274,7 @@ async def async_verify_claims(claims: list[dict], rag_chunks: list[dict]) -> dic
             "verifications": [],
             "overall_score": 0.0,
             "summary": f"验证过程出错: {str(e)[:100]}",
+            "error": f"验证调用失败: {_short_error(e)}",
         }
 
 
@@ -255,7 +284,16 @@ async def async_run_cove(content: str, rag_chunks: list[dict]) -> dict:
     Returns:
         同 run_cove 的返回格式
     """
-    claims = await async_extract_claims(content)
+    claims, extract_error = await async_extract_claims(content)
+    if extract_error:
+        return {
+            "claims": [],
+            "verifications": [],
+            "overall_score": 0.0,
+            "summary": extract_error,
+            "flagged_claims": [],
+            "error": extract_error,
+        }
     if not claims:
         return {
             "claims": [],
@@ -263,10 +301,12 @@ async def async_run_cove(content: str, rag_chunks: list[dict]) -> dict:
             "overall_score": 1.0,
             "summary": "内容过短或无可验证声明",
             "flagged_claims": [],
+            "error": None,
         }
 
     verification = await async_verify_claims(claims, rag_chunks)
     verifications = verification.get("verifications", [])
+    verify_error = verification.get("error")
 
     flagged = []
     for v in verifications:
@@ -284,4 +324,5 @@ async def async_run_cove(content: str, rag_chunks: list[dict]) -> dict:
         "overall_score": verification.get("overall_score", 0.0),
         "summary": verification.get("summary", ""),
         "flagged_claims": flagged,
+        "error": verify_error,
     }

@@ -7,7 +7,7 @@ import time
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import PlainTextResponse
 
-from api.deps import require_auth
+from api.deps import require_auth, verify_project_owner
 from api.schemas import SectionCreate, SectionUpdate
 from src.eval.metrics import record_eval
 
@@ -20,17 +20,23 @@ SECTION_ID_PATTERN = re.compile(r'^sec_[0-9a-f]+$')
 
 @router.get("/sections")
 async def list_sections(project_id: str, user: dict = Depends(require_auth)):
+    verify_project_owner(project_id, user["user_id"])
     from src.core.memory import project_memory
     return project_memory.get_unique_sections(project_id)
 
 
 @router.post("/sections")
 async def create_section(req: SectionCreate, user: dict = Depends(require_auth)):
+    verify_project_owner(req.project_id, user["user_id"])
     from src.core.agents.coordinator import coordinator
     from src.core.memory import project_memory
 
     if not req.name or not req.name.strip():
         raise HTTPException(status_code=422, detail="Section name must not be empty")
+    if req.target_length < 200 or req.target_length > 10000:
+        raise HTTPException(status_code=422, detail="target_length must be between 200 and 10000")
+    if req.agent not in ("writer", "analyst"):
+        req.agent = "writer"
 
     try:
         start_time = time.time()
@@ -43,12 +49,23 @@ async def create_section(req: SectionCreate, user: dict = Depends(require_auth))
                 "target_length": req.target_length,
                 "citation_density": req.citation_density,
             },
+            agent_choice=req.agent,
+            system_prompt=req.system_prompt,
+            requirements=req.requirements,
         )
 
-        # 保存到数据库
+        # Writer agent 内部已保存，这里不再重复保存，只取内容
         content = result.get("content", "")
         citations = result.get("citations", [])
-        project_memory.save_section(req.project_id, req.name, content, citations)
+        section_id = result.get("section_id")
+
+        # Fallback: if section_id lost in graph state, find from DB
+        if not section_id:
+            unique = project_memory.get_unique_sections(req.project_id)
+            for s in unique:
+                if s["section_name"] == req.name:
+                    section_id = s["id"]
+                    break
 
         # Record eval
         try:
@@ -76,6 +93,7 @@ async def create_section(req: SectionCreate, user: dict = Depends(require_auth))
             logger.warning(f"Section eval record failed: {e}")
 
         return {
+            "section_id": section_id,
             "section_name": req.name,
             "content": content,
             "type": result.get("type", "section"),
@@ -85,14 +103,20 @@ async def create_section(req: SectionCreate, user: dict = Depends(require_auth))
         }
     except Exception as e:
         logger.error(f"Section creation error: {e}", exc_info=True)
-        return {"content": "生成章节内容失败，请稍后重试", "type": "error"}
+        raise HTTPException(status_code=500, detail=f"生成章节内容失败: {str(e)[:200]}")
 
 
 @router.put("/sections/{section_id}")
 async def update_section(section_id: str, req: SectionUpdate, user: dict = Depends(require_auth)):
     if not SECTION_ID_PATTERN.match(section_id):
         raise HTTPException(status_code=400, detail="Invalid section ID format")
+    if not req.content or not req.content.strip():
+        raise HTTPException(status_code=422, detail="Content must not be empty")
     from src.core.memory import project_memory
+    section = project_memory.get_section_by_id(section_id)
+    if not section:
+        raise HTTPException(status_code=404, detail="Section not found")
+    verify_project_owner(section["project_id"], user["user_id"])
     project_memory.update_section_by_id(section_id, req.content)
     return {"status": "ok"}
 
@@ -102,6 +126,10 @@ async def delete_section(section_id: str, user: dict = Depends(require_auth)):
     if not SECTION_ID_PATTERN.match(section_id):
         raise HTTPException(status_code=400, detail="Invalid section ID format")
     from src.core.memory import project_memory
+    section = project_memory.get_section_by_id(section_id)
+    if not section:
+        raise HTTPException(status_code=404, detail="Section not found")
+    verify_project_owner(section["project_id"], user["user_id"])
     project_memory.delete_section(section_id)
     return {"status": "ok"}
 
@@ -109,6 +137,7 @@ async def delete_section(section_id: str, user: dict = Depends(require_auth)):
 @router.get("/sections/export")
 async def export_document(project_id: str, user: dict = Depends(require_auth)):
     """导出所有章节为 Markdown 文档"""
+    verify_project_owner(project_id, user["user_id"])
     from src.core.memory import project_memory
 
     sections = project_memory.get_unique_sections(project_id)

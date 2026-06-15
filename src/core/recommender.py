@@ -1,4 +1,5 @@
 """智能文献推荐 — 基于语义相似度和引用关系"""
+import json
 import logging
 import re
 import numpy as np
@@ -100,61 +101,61 @@ def build_citation_graph(project_id: str) -> dict[str, set[str]]:
 
 
 def get_recommendations(project_id: str, top_k: int = 5) -> list[dict]:
-    """Generate paper recommendations based on similarity and citation network."""
+    """Generate paper recommendations: internal similarity + external APIs + LLM fallback."""
     papers = project_memory.get_papers(project_id)
-    if len(papers) < 2:
-        return []
 
-    # Build paper ID to title mapping
-    pid_to_title = {p["id"]: p.get("title", "Untitled") for p in papers}
-    pid_to_authors = {p["id"]: p.get("authors", "") for p in papers}
-    pid_to_year = {p["id"]: str(p.get("year", "")) for p in papers}
+    # Try external recommendations (Semantic Scholar)
+    external = _semantic_scholar_recommendations(papers, top_k)
 
-    # Compute similarity
-    embeddings = get_paper_embeddings(project_id)
-    if not embeddings:
-        # Fallback: use chunk-level text similarity
-        return _chunk_based_recommendations(project_id, papers, top_k)
+    # Internal recommendations need >= 2 papers
+    internal = []
+    if len(papers) >= 2:
+        # Build paper ID to title mapping
+        pid_to_title = {p["id"]: p.get("title", "Untitled") for p in papers}
+        pid_to_authors = {p["id"]: p.get("authors", "") for p in papers}
+        pid_to_year = {p["id"]: str(p.get("year", "")) for p in papers}
 
-    sim_matrix = compute_similarity_matrix(embeddings)
+        # Compute similarity
+        embeddings = get_paper_embeddings(project_id)
+        if embeddings:
+            sim_matrix = compute_similarity_matrix(embeddings)
+            citation_graph = build_citation_graph(project_id)
+            citation_count = {}
+            for pid, cited in citation_graph.items():
+                for cited_pid in cited:
+                    citation_count[cited_pid] = citation_count.get(cited_pid, 0) + 1
 
-    # Get citation counts
-    citation_graph = build_citation_graph(project_id)
-    citation_count = {}
-    for pid, cited in citation_graph.items():
-        for cited_pid in cited:
-            citation_count[cited_pid] = citation_count.get(cited_pid, 0) + 1
+            for pid, similar in sim_matrix.items():
+                for other_pid, score in similar[:top_k]:
+                    cit_boost = citation_count.get(other_pid, 0) * 0.05
+                    internal.append({
+                        "source_paper_id": pid,
+                        "source_paper_title": pid_to_title.get(pid, ""),
+                        "recommended_paper_id": other_pid,
+                        "recommended_paper_title": pid_to_title.get(other_pid, ""),
+                        "recommended_paper_authors": pid_to_authors.get(other_pid, ""),
+                        "recommended_paper_year": pid_to_year.get(other_pid, ""),
+                        "similarity_score": round(min(1.0, score + cit_boost), 3),
+                        "recommendation_reason": f"与「{pid_to_title.get(pid, '未知')[:20]}」高度相关"
+                            + (f"，被引用 {citation_count.get(other_pid, 0)} 次" if citation_count.get(other_pid, 0) > 0 else ""),
+                    })
+        else:
+            internal = _chunk_based_recommendations(project_id, papers, top_k)
 
-    # Generate recommendations
-    recommendations = []
-    for pid, similar in sim_matrix.items():
-        for other_pid, score in similar[:top_k]:
-            # Boost score by citation count
-            cit_boost = citation_count.get(other_pid, 0) * 0.05
-            final_score = min(1.0, score + cit_boost)
-
-            recommendations.append({
-                "source_paper_id": pid,
-                "source_paper_title": pid_to_title.get(pid, ""),
-                "recommended_paper_id": other_pid,
-                "recommended_paper_title": pid_to_title.get(other_pid, ""),
-                "recommended_paper_authors": pid_to_authors.get(other_pid, ""),
-                "recommended_paper_year": pid_to_year.get(other_pid, ""),
-                "similarity_score": round(score, 3),
-                "recommendation_reason": f"与「{pid_to_title.get(pid, '未知')[:20]}」高度相关"
-                    + (f"，被引用 {citation_count.get(other_pid, 0)} 次" if citation_count.get(other_pid, 0) > 0 else ""),
-            })
-
-    # Sort by similarity score and deduplicate
+    # Merge and deduplicate
     seen = set()
-    unique = []
-    for rec in sorted(recommendations, key=lambda x: x["similarity_score"], reverse=True):
-        key = (rec["source_paper_id"], rec["recommended_paper_id"])
+    merged = []
+    for rec in sorted(internal + external, key=lambda x: x["similarity_score"], reverse=True):
+        key = (rec.get("source_paper_id", ""), rec.get("recommended_paper_id", ""), rec.get("recommended_paper_title", ""))
         if key not in seen:
             seen.add(key)
-            unique.append(rec)
+            merged.append(rec)
 
-    return unique[:top_k * len(papers)]
+    # Fallback: if no results from any source, use LLM to generate recommendations
+    if not merged and papers:
+        merged = _llm_fallback_recommendations(papers, top_k, project_memory.get_project(project_id))
+
+    return merged[:top_k * max(len(papers), 1)]
 
 
 def _chunk_based_recommendations(project_id: str, papers: list[dict], top_k: int) -> list[dict]:
@@ -190,3 +191,150 @@ def _chunk_based_recommendations(project_id: str, papers: list[dict], top_k: int
                 })
 
     return recommendations[:top_k * len(papers)]
+
+
+def _semantic_scholar_recommendations(papers: list[dict], top_k: int) -> list[dict]:
+    """Recommend external papers via Semantic Scholar API (no key required for basic use)."""
+    import os
+    import httpx
+
+    api_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY", "")
+    if not papers:
+        return []
+
+    headers = {}
+    if api_key:
+        headers["x-api-key"] = api_key
+
+    # Collect paper titles for search queries
+    titles = [p.get("title", "") for p in papers if p.get("title")]
+    if not titles:
+        return []
+
+    recommendations = []
+    seen_titles = set()
+
+    # Use up to 3 paper titles as search seeds
+    for title in titles[:3]:
+        try:
+            # Search Semantic Scholar for related papers
+            url = "https://api.semanticscholar.org/graph/v1/paper/search"
+            params = {
+                "query": title[:200],
+                "limit": top_k + 2,
+                "fields": "title,authors,year,citationCount,abstract,url",
+            }
+            with httpx.Client(timeout=10) as client:
+                resp = client.get(url, params=params, headers=headers)
+            if resp.status_code != 200:
+                logger.warning(f"Semantic Scholar API returned {resp.status_code}")
+                continue
+
+            data = resp.json()
+            for paper_data in data.get("data", []):
+                rec_title = paper_data.get("title", "")
+                if not rec_title or rec_title in seen_titles:
+                    continue
+                # Skip papers already in the project
+                if any(rec_title.lower() == t.lower() for t in titles):
+                    continue
+                seen_titles.add(rec_title)
+
+                authors = ", ".join(a.get("name", "") for a in paper_data.get("authors", [])[:3])
+                year = str(paper_data.get("year", ""))
+                citations = paper_data.get("citationCount", 0)
+                url = paper_data.get("url", "")
+
+                recommendations.append({
+                    "source_paper_id": "",
+                    "source_paper_title": "",
+                    "recommended_paper_id": url or f"ss_{paper_data.get('paperId', '')[:8]}",
+                    "recommended_paper_title": rec_title,
+                    "recommended_paper_authors": authors,
+                    "recommended_paper_year": year,
+                    "similarity_score": round(min(1.0, min(citations, 100) / 100 * 0.7 + 0.1), 3),
+                    "recommendation_reason": f"外部推荐：引用 {citations} 次" if citations > 0 else "外部推荐：语义相关",
+                    "external_url": url,
+                })
+        except Exception as e:
+            logger.warning(f"Semantic Scholar search failed for '{title[:30]}': {e}")
+
+    return recommendations[:top_k * 2]
+
+
+def _llm_fallback_recommendations(
+    papers: list[dict], top_k: int, project: Optional[dict] = None
+) -> list[dict]:
+    """Fallback: use LLM + web search to recommend related papers."""
+    from src.core.llm import llm_client
+    from src.tools.web_search import web_search
+
+    titles = [p.get("title", "") for p in papers if p.get("title")]
+    if not titles:
+        return []
+
+    topic = project.get("topic", "") if project else ""
+
+    # Step 1: Web search for related papers
+    web_results = []
+    for query_seed in (titles[:2] if titles else [topic])[:2]:
+        results = web_search(f"{query_seed} related papers research", top_k=5)
+        web_results.extend(results)
+
+    web_text = "\n".join(
+        f"- [{r.get('title', '')}]({r.get('url', '')}): {r.get('snippet', '')}"
+        for r in web_results[:10]
+    ) if web_results else "No web results available."
+
+    # Step 2: LLM generates recommendations
+    prompt = f"""Based on the following research papers and web search results, recommend {top_k} related academic papers that would be valuable to read.
+
+Current papers in the project:
+{json.dumps([{'title': t} for t in titles[:5]], ensure_ascii=False, indent=2)}
+
+Research topic: {topic or 'general'}
+
+Web search results:
+{web_text}
+
+For each recommendation provide:
+- title: exact paper title
+- authors: up to 3 author names
+- year: publication year (estimate if unsure)
+- reason: why this paper is relevant (one sentence in Chinese)
+
+Return JSON:
+{{"recommendations": [{{"title": "...", "authors": "...", "year": "...", "reason": "..."}}]}}
+
+Only return JSON. Focus on real, well-known papers if possible."""
+
+    try:
+        result = llm_client.chat_json(
+            [
+                {"role": "system", "content": "You are an academic paper recommendation expert. Only return valid JSON."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.5,
+        )
+
+        recs = result.get("recommendations", [])
+        recommendations = []
+        for i, r in enumerate(recs[:top_k]):
+            rec_title = r.get("title", "")
+            if not rec_title:
+                continue
+            recommendations.append({
+                "source_paper_id": "",
+                "source_paper_title": "",
+                "recommended_paper_id": f"llm_rec_{i}",
+                "recommended_paper_title": rec_title,
+                "recommended_paper_authors": r.get("authors", ""),
+                "recommended_paper_year": r.get("year", ""),
+                "similarity_score": round(0.5 + 0.1 * (top_k - i) / top_k, 3),
+                "recommendation_reason": r.get("reason", "LLM 推荐：相关研究"),
+            })
+        return recommendations
+
+    except Exception as e:
+        logger.warning(f"LLM fallback recommendations failed: {e}")
+        return []

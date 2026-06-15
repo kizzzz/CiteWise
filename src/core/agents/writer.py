@@ -29,7 +29,8 @@ class WriterAgent(BaseAgent):
 
     def generate_section(self, section_name: str, section_topic: str,
                          research_result: dict, project_id: str,
-                         framework: list = None, gen_params: dict = None) -> dict:
+                         framework: list = None, gen_params: dict = None,
+                         system_prompt: str = "", requirements: str = "") -> dict:
         """基于检索结果生成章节"""
         self.reset()
         self._ensure_deps()
@@ -52,6 +53,9 @@ class WriterAgent(BaseAgent):
         previous_summary = self._wm.get_previous_summary()
 
         system = SYSTEM_PROMPT_BASE
+        # Override system prompt with user-defined agent prompt if provided
+        if system_prompt and system_prompt.strip():
+            system = system_prompt.strip()
         task_prompt = prompt_engine.build_section_prompt(
             section_name=section_name,
             section_topic=section_topic,
@@ -64,6 +68,10 @@ class WriterAgent(BaseAgent):
 
         # Add citation density instruction
         task_prompt += f"\n\n### 引用密度要求\n{citation_instruction}"
+
+        # Add user requirements if provided
+        if requirements and requirements.strip():
+            task_prompt += f"\n\n### 用户要求\n{requirements.strip()}"
 
         messages = [
             {"role": "system", "content": system},
@@ -80,7 +88,7 @@ class WriterAgent(BaseAgent):
         self.think("来源标注完成")
 
         # 保存
-        self._pm.save_section(project_id, section_name, content)
+        section_id = self._pm.save_section(project_id, section_name, content)
         summary = summarize_section(self._llm, content)
         self._wm.add_section_summary(section_name, summary, len(content))
 
@@ -89,6 +97,7 @@ class WriterAgent(BaseAgent):
         return {
             "type": "section",
             "content": content,
+            "section_id": section_id,
             "section_name": section_name,
             "intent": "generate",
             "citations": citation_check,

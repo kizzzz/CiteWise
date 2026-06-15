@@ -135,9 +135,89 @@ class AnalystAgent(BaseAgent):
             "thinking_steps": self.thinking_steps,
         }
 
+    def generate_section(self, section_name: str, section_topic: str,
+                         research_result: dict, project_id: str,
+                         gen_params: dict = None,
+                         system_prompt: str = "", requirements: str = "") -> dict:
+        """Analyst 生成数据/方法导向的章节"""
+        self.reset()
+        from src.core.memory import project_memory, working_memory
+        from src.core.prompt import prompt_engine, SYSTEM_PROMPT_BASE
+        from src.core.source_annotation import annotate_sources, summarize_section
+        from src.core.retriever import validate_citations
+
+        params = gen_params or {}
+        target_words = params.get("target_length", 1000)
+        style = params.get("style", "学术正式")
+
+        rag_content = research_result.get("rag_content", "")
+        chunks = research_result.get("chunks", [])
+        previous_summary = working_memory.get_previous_summary()
+
+        task_prompt = prompt_engine.build_section_prompt(
+            section_name=section_name,
+            section_topic=section_topic or f"方法论与数据分析：{section_name}",
+            reference_material=rag_content,
+            framework="",
+            previous_summary=previous_summary,
+            target_words=target_words,
+            writing_style=style,
+        )
+        # Analyst 侧重: 强调方法、数据、统计
+        task_prompt += (
+            "\n\n### 额外要求（Analyst Agent）\n"
+            "请侧重方法论、数据分析框架、统计结果和实证发现来撰写本章节。"
+            "适当使用表格对比不同研究的方法和结论。"
+        )
+
+        # Add user requirements if provided
+        if requirements and requirements.strip():
+            task_prompt += f"\n\n### 用户要求\n{requirements.strip()}"
+
+        messages = [
+            {"role": "system", "content": system_prompt.strip() if system_prompt and system_prompt.strip() else SYSTEM_PROMPT_BASE},
+            {"role": "user", "content": task_prompt},
+        ]
+
+        self.think("Analyst 生成方法/数据导向章节...")
+        content = self.llm.chat(messages, temperature=0.7, max_tokens=4000)
+        self.think(f"生成完成: {len(content)} 字")
+
+        content = annotate_sources(content, chunks, [])
+        section_id = project_memory.save_section(project_id, section_name, content)
+        summary = summarize_section(self.llm, content)
+        working_memory.add_section_summary(section_name, summary, len(content))
+
+        citation_check = validate_citations(content, chunks)
+
+        return {
+            "type": "section",
+            "content": content,
+            "section_id": section_id,
+            "section_name": section_name,
+            "intent": "generate",
+            "citations": citation_check,
+            "word_count": len(content),
+            "sources": [
+                {"title": c.get("paper_title", ""), "citation": c.get("citation", "")}
+                for c in chunks
+            ] if chunks else [],
+            "thinking_steps": self.thinking_steps,
+        }
+
     def process(self, user_input: str, project_id: str = None, **kwargs) -> dict:
         intent = kwargs.get("intent", "analyze")
-        if intent == "analyze":
+        if intent == "generate":
+            return self.generate_section(
+                kwargs.get("section_name", "方法论"),
+                kwargs.get("section_topic", ""),
+                kwargs.get("research_result", {}),
+                project_id or "",
+                kwargs.get("gen_params"),
+                kwargs.get("system_prompt", ""),
+                kwargs.get("requirements", ""),
+            )
+        elif intent == "analyze":
             return self.analyze_project(project_id or "")
         elif intent == "split_table":
             return self.split_table(

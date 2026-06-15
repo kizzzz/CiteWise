@@ -27,7 +27,15 @@ if not JWT_SECRET:
         "JWT_SECRET environment variable is required. "
         "Set it in .env or as an environment variable before starting the server."
     )
-JWT_EXPIRE_HOURS = 72
+# Reject known insecure default secrets
+_INSECURE_DEFAULTS = {"change-me-to-a-random-secret-in-production", "secret", "changeme", "jwt-secret"}
+if JWT_SECRET in _INSECURE_DEFAULTS:
+    raise RuntimeError(
+        f"JWT_SECRET is set to an insecure default value. "
+        f"Generate a secure random secret and set it in .env. "
+        f"Example: python -c \"import secrets; print(secrets.token_hex(32))\""
+    )
+JWT_EXPIRE_HOURS = 24
 
 # Password hashing — PBKDF2 with per-user salt, pure Python
 _ITERATIONS = 200_000

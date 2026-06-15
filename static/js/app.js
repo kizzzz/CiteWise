@@ -17,6 +17,7 @@ let currentUser = null; // { id, username, token }
 let authMode = 'login'; // 'login' or 'register'
 let currentSessionId = null; // 对话会话 ID（多轮对话）
 let researchMaterials = []; // 写作素材收集（按项目存储）
+let currentPapers = []; // 当前项目的文献列表
 
 let agents = [
     { id: 'research', name: 'Research', icon: 'search', status: 'READY', color: 'blue',
@@ -37,6 +38,10 @@ let skills = [
     { id: 4, title: "Term Normalizer", desc: "术语一致性检查。", icon: "type", tag: "已安装", agent: "writing" }
 ];
 
+// ============ Avatar Templates ============
+const AI_AVATAR = `<div class="w-10 h-10 rounded-full bg-gradient-to-br from-indigo-600 via-purple-500 to-blue-500 flex items-center justify-center shrink-0 shadow-md shadow-indigo-500/25 ring-2 ring-white/60"><svg viewBox="0 0 24 24" width="18" height="18"><path d="M12 1.5L13.45 8.6Q13.55 9.15 14.05 9.3L21 12L14.05 14.7Q13.55 14.85 13.45 15.4L12 22.5L10.55 15.4Q10.45 14.85 9.95 14.7L3 12L9.95 9.3Q10.45 9.15 10.55 8.6Z" fill="white" fill-opacity="0.95"/><circle cx="12" cy="12" r="1.2" fill="white"/></svg></div>`;
+const USER_AVATAR = `<div class="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 via-indigo-500 to-violet-500 flex items-center justify-center shrink-0 shadow-md shadow-indigo-500/25 ring-2 ring-white/60"><svg viewBox="0 0 24 24" width="18" height="18" fill="none"><circle cx="12" cy="8.5" r="3.5" fill="white" fill-opacity="0.95"/><path d="M4.5 21C4.5 17.5 7.5 15 12 15C16.5 15 19.5 17.5 19.5 21" stroke="white" stroke-opacity="0.95" stroke-width="2" stroke-linecap="round"/></svg></div>`;
+
 let tools = [
     { id: 1, title: "Statistical Plotter", desc: "自动根据文献数据绘制图表。", icon: "bar-chart-3", type: "脚本", trigger: "绘图, 画图, plot", agent: "analyst" },
     { id: 2, title: "Citation Formatter", desc: "处理引用格式。", icon: "book-open", type: "脚本", trigger: "格式, 引用, cite", agent: "research" }
@@ -48,16 +53,31 @@ let apiKeys = [
 
 // ============ Init ============
 document.addEventListener('DOMContentLoaded', async () => {
+    // Event delegation for data-action elements (XSS-safe replacement for inline onclick)
+    document.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-action]');
+        if (!btn) return;
+        const action = btn.dataset.action;
+        const id = btn.dataset.id;
+        if (action === 'openPaper') {
+            e.stopPropagation();
+            openPaperDetail(id, btn.dataset.title, btn.dataset.authors);
+        } else if (action === 'editTitle') {
+            e.stopPropagation();
+            startEditTitle(id, btn);
+        } else if (action === 'deletePaper') {
+            e.stopPropagation();
+            deletePaper(id);
+        } else if (action === 'openDraft') {
+            openDraftEditor(id, btn.dataset.name);
+        }
+    });
+
     lucide.createIcons();
     renderAgentStatus();
     renderApiKeyList();
-    await loadProjects();
-    renderSkillLibrary();
-    renderToolLibrary();
-    renderAgentCards();
-    renderFields();
 
-    // Restore user session from localStorage
+    // Restore user session BEFORE loading projects (needs token)
     const savedUser = localStorage.getItem('citewise_user');
     if (savedUser) {
         try {
@@ -65,6 +85,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             updateAuthUI();
         } catch { currentUser = null; }
     }
+
+    await loadProjects();
+    renderSkillLibrary();
+    renderToolLibrary();
+    renderAgentCards();
+    renderFields();
 
     // Restore last session ID
     const savedSession = localStorage.getItem('citewise_session');
@@ -171,7 +197,8 @@ async function loadProjectData() {
     if (!currentProjectId) return;
     try {
         const state = await (await api('GET', `/projects/${currentProjectId}/state`)).json();
-        renderPapers(state.papers || []);
+        currentPapers = state.papers || [];
+        renderPapers(currentPapers);
         renderDrafts(state.sections_with_id || []);
         // Restore session history if we have a saved session
         if (currentSessionId) {
@@ -232,31 +259,93 @@ function renderPapers(papers) {
         return;
     }
     c.innerHTML = papers.map(p =>
-        `<div onclick="openPaperDetail('${p.id}', '${escapeJs(p.title)}', '${escapeJs(p.authors || '')}')" class="interactive-card bg-white p-6 rounded-3xl border border-slate-100 shadow-sm animate__animated animate__fadeIn cursor-pointer">
+        `<div class="interactive-card group relative bg-white p-6 rounded-3xl border border-slate-100 shadow-sm animate__animated animate__fadeIn cursor-pointer" data-action="openPaper" data-id="${escapeAttr(p.id)}" data-title="${escapeAttr(p.title)}" data-authors="${escapeAttr(p.authors || '')}">
+            <div class="absolute top-3 right-3 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200 z-10">
+                <button data-action="editTitle" data-id="${escapeAttr(p.id)}" class="w-7 h-7 rounded-full bg-slate-100 hover:bg-blue-100 text-slate-400 hover:text-blue-600 flex items-center justify-center transition-colors" title="重命名">
+                    <i data-lucide="pencil" class="w-3.5 h-3.5"></i>
+                </button>
+                <button data-action="deletePaper" data-id="${escapeAttr(p.id)}" class="w-7 h-7 rounded-full bg-slate-100 hover:bg-red-100 text-slate-400 hover:text-red-500 flex items-center justify-center transition-colors" title="删除">
+                    <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                </button>
+            </div>
             <div class="w-10 h-10 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center mb-4">
                 <i data-lucide="file-text" class="w-5 h-5"></i>
             </div>
-            <h4 class="font-bold text-slate-800 text-sm mb-1" ondblclick="event.stopPropagation(); editPaperTitle('${p.id}', this)">${escapeHtml(p.title || '未命名')}</h4>
+            <h4 class="paper-title font-bold text-slate-800 text-sm mb-1" data-title="${escapeHtml(p.title || '未命名')}">${escapeHtml(p.title || '未命名')}</h4>
             <p class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">${p.year || '?'} · ${escapeHtml((p.authors || '').substring(0, 20))}</p>
         </div>`
     ).join('');
     lucide.createIcons();
 }
 
-async function editPaperTitle(paperId, el) {
-    const currentTitle = el.textContent.trim();
-    const newTitle = prompt('编辑论文标题:', currentTitle);
-    if (!newTitle || newTitle.trim() === currentTitle) return;
-    try {
-        const res = await api('PATCH', `/papers/${paperId}/title`, { title: newTitle.trim() });
-        if (res.ok) {
-            el.textContent = newTitle.trim();
-            showToast('标题已更新', 'success');
-        } else {
-            showToast('更新失败', 'error');
+function startEditTitle(paperId, btnEl) {
+    const card = btnEl.closest('.interactive-card');
+    const h4 = card.querySelector('.paper-title');
+    const currentTitle = h4.dataset.title || h4.textContent.trim();
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = currentTitle;
+    input.className = 'w-full font-bold text-slate-800 text-sm border border-blue-300 rounded-lg px-2 py-1 outline-none focus:ring-2 focus:ring-blue-200';
+
+    h4.replaceWith(input);
+    input.focus();
+    input.select();
+
+    const save = async () => {
+        const newTitle = input.value.trim();
+        input.removeEventListener('blur', save);
+        input.removeEventListener('keydown', onKey);
+
+        if (!newTitle || newTitle === currentTitle) {
+            restoreTitle(input, currentTitle);
+            return;
         }
+        try {
+            await api('PATCH', `/papers/${paperId}/title`, { title: newTitle });
+            updatePaperTitle(paperId, newTitle);
+            restoreTitle(input, newTitle);
+            showToast('标题已更新', 'success');
+        } catch (e) {
+            restoreTitle(input, currentTitle);
+            showToast('更新失败: ' + e.message, 'error');
+        }
+    };
+
+    const onKey = (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); save(); }
+        if (e.key === 'Escape') { input.removeEventListener('blur', save); input.removeEventListener('keydown', onKey); restoreTitle(input, currentTitle); }
+    };
+
+    input.addEventListener('blur', save);
+    input.addEventListener('keydown', onKey);
+}
+
+function restoreTitle(input, title) {
+    const h4 = document.createElement('h4');
+    h4.className = 'paper-title font-bold text-slate-800 text-sm mb-1';
+    h4.dataset.title = title;
+    h4.textContent = title;
+    input.replaceWith(h4);
+}
+
+function updatePaperTitle(paperId, newTitle) {
+    const p = currentPapers.find(x => x.id === paperId);
+    if (p) p.title = newTitle;
+}
+
+async function deletePaper(paperId) {
+    const p = currentPapers.find(x => x.id === paperId);
+    const name = p?.title || '该文献';
+    if (!confirm(`确定删除「${name}」？此操作不可恢复。`)) return;
+
+    try {
+        await api('DELETE', `/papers/${paperId}?project_id=${currentProjectId}`);
+        currentPapers = currentPapers.filter(x => x.id !== paperId);
+        renderPapers(currentPapers);
+        showToast('已删除', 'success');
     } catch (e) {
-        showToast('网络错误', 'error');
+        showToast('删除失败: ' + e.message, 'error');
     }
 }
 
@@ -406,7 +495,7 @@ function renderDrafts(sections) {
         return;
     }
     c.innerHTML = sections.map(s =>
-        `<div onclick="openDraftEditor('${s.id}', '${escapeJs(s.name)}')" class="interactive-card bg-white p-6 rounded-3xl border border-slate-100 shadow-sm animate__animated animate__fadeIn cursor-pointer">
+        `<div data-action="openDraft" data-id="${escapeAttr(s.id)}" data-name="${escapeAttr(s.name)}" class="interactive-card bg-white p-6 rounded-3xl border border-slate-100 shadow-sm animate__animated animate__fadeIn cursor-pointer">
             <h4 class="font-bold text-slate-800 text-sm mb-2">${escapeHtml(s.name)}</h4>
             <p class="text-[10px] text-slate-400">最后编辑于：刚刚</p>
         </div>`
@@ -414,14 +503,81 @@ function renderDrafts(sections) {
     lucide.createIcons();
 }
 
+let _draftGenerating = false;
+let _progressTimer = null;
+let _progressStep = 0;
+const _PROGRESS_STEPS = [
+    { label: '分析意图', icon: 'brain' },
+    { label: '检索知识库', icon: 'search' },
+    { label: '调用 Agent 生成', icon: 'sparkles' },
+    { label: '标注来源', icon: 'bookmark' },
+    { label: '完成', icon: 'check-circle' },
+];
+
+function showGenerationProgress(sectionName) {
+    _progressStep = 0;
+    const overlay = document.getElementById('generationProgress');
+    if (!overlay) return;
+    overlay.classList.remove('hidden');
+    const bar = overlay.querySelector('.gen-progress-bar');
+    const stepLabel = overlay.querySelector('.gen-progress-label');
+    const stepIcon = overlay.querySelector('.gen-progress-icon');
+    const titleEl = overlay.querySelector('.gen-progress-title');
+    if (titleEl) titleEl.textContent = `正在生成「${sectionName}」`;
+    if (bar) bar.style.width = '5%';
+    if (stepLabel) stepLabel.textContent = _PROGRESS_STEPS[0].label;
+    if (stepIcon) stepIcon.setAttribute('data-lucide', _PROGRESS_STEPS[0].icon);
+
+    _progressTimer = setInterval(() => {
+        _progressStep = Math.min(_progressStep + 1, _PROGRESS_STEPS.length - 2);
+        const step = _PROGRESS_STEPS[_progressStep];
+        const pct = Math.min(10 + (_progressStep + 1) * 20, 90);
+        if (bar) bar.style.width = pct + '%';
+        if (stepLabel) stepLabel.textContent = step.label;
+        if (stepIcon) {
+            stepIcon.setAttribute('data-lucide', step.icon);
+            lucide.createIcons();
+        }
+    }, 4000);
+}
+
+function hideGenerationProgress(success = true) {
+    if (_progressTimer) { clearInterval(_progressTimer); _progressTimer = null; }
+    const overlay = document.getElementById('generationProgress');
+    if (!overlay) return;
+    const bar = overlay.querySelector('.gen-progress-bar');
+    const stepLabel = overlay.querySelector('.gen-progress-label');
+    const stepIcon = overlay.querySelector('.gen-progress-icon');
+    if (success) {
+        if (bar) bar.style.width = '100%';
+        if (stepLabel) stepLabel.textContent = '完成';
+        if (stepIcon) {
+            stepIcon.setAttribute('data-lucide', 'check-circle');
+            lucide.createIcons();
+        }
+        setTimeout(() => overlay.classList.add('hidden'), 1200);
+    } else {
+        overlay.classList.add('hidden');
+    }
+}
+
 async function confirmCreateDraft() {
+    if (_draftGenerating) { showToast('正在生成中，请稍候', 'error'); return; }
     const name = document.getElementById('newDraftTitle').value.trim();
-    if (!name || !currentProjectId) return;
+    if (!name) { showToast('请输入章节名称', 'error'); return; }
+    if (!currentProjectId) { showToast('请先选择或创建项目', 'error'); return; }
     const style = document.getElementById('draftStyle')?.value || '学术正式';
     const length = parseInt(document.getElementById('draftLength')?.value || '1000');
     const citation = document.getElementById('draftCitation')?.value || '正常';
+    const agentEl = document.getElementById('draftAgent');
+    const agent = agentEl?.value || 'writer';
+    // Get agent prompt from agents array
+    const agentObj = (typeof agents !== 'undefined' && agents) ? agents.find(a => a.id === agent) : null;
+    const systemPrompt = agentObj?.prompt || '';
+    const requirements = document.getElementById('draftRequirements')?.value?.trim() || '';
     toggleModal('newDraftModal');
-    showToast('正在生成章节...', 'success');
+    _draftGenerating = true;
+    showGenerationProgress(name);
 
     try {
         const result = await (await api('POST', '/sections', {
@@ -430,10 +586,38 @@ async function confirmCreateDraft() {
             style: style,
             target_length: length,
             citation_density: citation,
+            agent: agent,
+            system_prompt: systemPrompt,
+            requirements: requirements,
         })).json();
+        _draftGenerating = false;
+        hideGenerationProgress(true);
         showToast('章节生成完成', 'success');
         await loadProjectData();
+
+        // Open editor — try section_id first, then lookup by name
+        let sectionId = result.section_id;
+        if (!sectionId) {
+            const state = await (await api('GET', `/projects/${currentProjectId}/state`)).json();
+            const sec = (state.sections_with_id || []).find(s => s.name === name);
+            if (sec) sectionId = sec.id;
+        }
+        if (sectionId) {
+            openDraftEditor(sectionId, name);
+        } else if (result.content) {
+            // Last fallback: show content directly in editor
+            currentDraftId = null;
+            currentDraftName = name;
+            safeClassAction('draftListView', 'add', 'hidden');
+            safeClassAction('draftEditor', 'remove', 'hidden');
+            document.getElementById('editorTitle').textContent = name;
+            document.getElementById('editableArea').innerText = result.content;
+            document.getElementById('subChatWindow').innerHTML = '<div class="sub-bubble sub-bubble-ai">协作模式已激活。输入指令来修改章节内容。</div>';
+            lucide.createIcons();
+        }
     } catch (e) {
+        _draftGenerating = false;
+        hideGenerationProgress(false);
         showToast('生成失败: ' + e.message, 'error');
     }
 }
@@ -499,7 +683,13 @@ async function handleSendSubChat() {
         if (result.type === 'modify' || result.content) {
             document.getElementById('editableArea').innerText = result.content;
             // Save back
-            await api('PUT', `/sections/${currentDraftId}`, { content: result.content });
+            if (currentDraftId) {
+                await api('PUT', `/sections/${currentDraftId}`, { content: result.content });
+            } else if (currentDraftName && currentProjectId) {
+                // Fallback: save by section name via coordinator
+                const content = result.content;
+                document.getElementById('editableArea').innerText = content;
+            }
         }
     } catch (e) {
         document.getElementById(aiBubbleId).textContent = '错误: ' + e.message;
@@ -531,9 +721,7 @@ async function handleSendChat() {
     const collabDiv = document.createElement('div');
     collabDiv.className = 'flex gap-4 mb-8 animate__animated animate__fadeInUp';
     collabDiv.innerHTML = `
-        <div class="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center text-white shrink-0">
-            <i data-lucide="git-branch"></i>
-        </div>
+        ${AI_AVATAR}
         <div class="flex-1 space-y-4">
             <div class="bg-indigo-50 border border-indigo-100 p-6 rounded-3xl rounded-tl-none">
                 <div class="flex items-center gap-2 mb-4">
@@ -585,6 +773,11 @@ async function handleSendChat() {
             scrollChat();
         }
 
+        if (!response.ok) {
+            const errText = await response.text().catch(() => 'Unknown error');
+            throw new Error(`Chat request failed: HTTP ${response.status}`);
+        }
+
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
@@ -633,29 +826,46 @@ async function handleSendChat() {
                     if (eventType === 'verification') {
                         const collabParent = document.getElementById(collabId + '-res')?.parentElement?.parentElement;
                         if (collabParent) {
+                            const coveError = data.error;
                             const score = data.overall_score || 0;
-                            const scoreClass = score > 0.8 ? 'high' : (score > 0.5 ? 'medium' : 'low');
-                            const flaggedCount = data.flagged_count || 0;
                             const claimCount = data.claim_count || 0;
-                            let flaggedHtml = '';
-                            if (data.flagged_claims && data.flagged_claims.length > 0) {
-                                flaggedHtml = data.flagged_claims.map(f =>
-                                    `<div class="cove-flagged-item"><strong>${escapeHtml(f.status)}</strong>: ${escapeHtml(f.claim)}${f.issue ? '<br><span class="text-slate-500">' + escapeHtml(f.issue) + '</span>' : ''}</div>`
-                                ).join('');
-                            }
+                            const flaggedCount = data.flagged_count || 0;
+
                             const coveCard = document.createElement('div');
                             coveCard.className = 'cove-card';
-                            coveCard.innerHTML = `
-                                <div class="flex items-center gap-3 mb-2">
-                                    <span class="cove-score ${scoreClass}">${(score * 100).toFixed(0)}%</span>
-                                    <div>
-                                        <div class="font-bold text-slate-700">事实性验证</div>
-                                        <div class="text-slate-400">${claimCount} 个声明${flaggedCount > 0 ? '，<span class="text-red-500">' + flaggedCount + ' 个存疑</span>' : '，全部可信'}</div>
+
+                            if (coveError) {
+                                // Verification process failed (API error)
+                                coveCard.innerHTML = `
+                                    <div class="flex items-center gap-3 mb-2">
+                                        <span class="cove-score low"><i data-lucide="alert-triangle" class="w-4 h-4 inline"></i></span>
+                                        <div>
+                                            <div class="font-bold text-slate-700">事实性验证</div>
+                                            <div class="text-amber-600 text-xs">${claimCount > 0 ? `已提取 ${claimCount} 个声明，但` : ''}${escapeHtml(coveError)}</div>
+                                            <div class="text-slate-400 text-[10px] mt-1">建议稍后重新提问以触发验证</div>
+                                        </div>
+                                    </div>`;
+                            } else {
+                                // Verification succeeded
+                                const scoreClass = score > 0.8 ? 'high' : (score > 0.5 ? 'medium' : 'low');
+                                let flaggedHtml = '';
+                                if (data.flagged_claims && data.flagged_claims.length > 0) {
+                                    flaggedHtml = data.flagged_claims.map(f =>
+                                        `<div class="cove-flagged-item"><strong>${escapeHtml(f.status)}</strong>: ${escapeHtml(f.claim)}${f.issue ? '<br><span class="text-slate-500">' + escapeHtml(f.issue) + '</span>' : ''}</div>`
+                                    ).join('');
+                                }
+                                coveCard.innerHTML = `
+                                    <div class="flex items-center gap-3 mb-2">
+                                        <span class="cove-score ${scoreClass}">${(score * 100).toFixed(0)}%</span>
+                                        <div>
+                                            <div class="font-bold text-slate-700">事实性验证</div>
+                                            <div class="text-slate-400">${claimCount} 个声明${flaggedCount > 0 ? '，<span class="text-red-500">' + flaggedCount + ' 个存疑</span>' : '，全部可信'}</div>
+                                        </div>
                                     </div>
-                                </div>
-                                ${flaggedHtml ? '<details><summary class="cursor-pointer text-xs text-slate-500 font-bold">查看详情</summary>' + flaggedHtml + '</details>' : ''}
-                            `;
+                                    ${flaggedHtml ? '<details><summary class="cursor-pointer text-xs text-slate-500 font-bold">查看详情</summary>' + flaggedHtml + '</details>' : ''}`;
+                            }
                             collabParent.appendChild(coveCard);
+                            lucide.createIcons();
                             scrollChat();
                         }
                     }
@@ -787,6 +997,7 @@ async function streamCategorizedText(target, fullText) {
     if (currentText.trim()) parts.push({ type: currentType, text: currentText });
     if (parts.length === 0) parts.push({ type: 'ai', text: fullText });
 
+    // Streaming phase: show plain text character by character
     for (const part of parts) {
         const span = document.createElement('span');
         span.className = `txt-${part.type} animate__animated animate__fadeIn`;
@@ -799,6 +1010,68 @@ async function streamCategorizedText(target, fullText) {
         }
         await new Promise(r => setTimeout(r, 50));
     }
+
+    // Post-stream: replace with Markdown-rendered content
+    const renderedParts = parts.map(p => {
+        const mdHtml = renderMarkdown(p.text);
+        return `<span class="txt-${p.type}">${mdHtml}</span>`;
+    }).join('');
+    target.innerHTML = renderedParts;
+    target.classList.add('md-render');
+    scrollChat();
+}
+
+function parseSourceAnnotations(fullText) {
+    const parts = [];
+    const lines = fullText.split('\n');
+    let currentType = 'ai';
+    let currentText = '';
+    for (const line of lines) {
+        if (line.startsWith('[KB]')) {
+            if (currentText.trim()) parts.push({ type: currentType, text: currentText });
+            currentType = 'kb';
+            currentText = line.slice(4).trimStart() + '\n';
+        } else if (line.startsWith('[WEB]')) {
+            if (currentText.trim()) parts.push({ type: currentType, text: currentText });
+            currentType = 'web';
+            currentText = line.slice(5).trimStart() + '\n';
+        } else if (line.startsWith('[AI]')) {
+            if (currentText.trim()) parts.push({ type: currentType, text: currentText });
+            currentType = 'ai';
+            currentText = line.slice(4).trimStart() + '\n';
+        } else {
+            currentText += line + '\n';
+        }
+    }
+    if (currentText.trim()) parts.push({ type: currentType, text: currentText });
+    if (parts.length === 0) parts.push({ type: 'ai', text: fullText });
+    return parts;
+}
+
+function renderCategorizedText(target, fullText) {
+    const parts = parseSourceAnnotations(fullText);
+    const renderedParts = parts.map(p => {
+        const mdHtml = renderMarkdown(p.text);
+        return `<span class="txt-${p.type}">${mdHtml}</span>`;
+    }).join('');
+    target.innerHTML = renderedParts;
+    target.classList.add('md-render');
+}
+
+function renderMarkdown(text) {
+    if (typeof marked === 'undefined' || typeof DOMPurify === 'undefined') {
+        // Fallback: escape HTML if libraries not loaded
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+    try {
+        return DOMPurify.sanitize(marked.parse(text.trim()));
+    } catch (e) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
 }
 
 function appendUserMessage(text) {
@@ -806,9 +1079,7 @@ function appendUserMessage(text) {
     const d = document.createElement('div');
     d.className = 'flex gap-4 flex-row-reverse mb-8 animate__animated animate__fadeInUp';
     d.innerHTML = `
-        <div class="w-10 h-10 rounded-xl bg-slate-800 flex items-center justify-center text-white shrink-0 shadow-lg">
-            <i data-lucide="user"></i>
-        </div>
+        ${USER_AVATAR}
         <div class="bg-blue-600 text-white p-5 rounded-3xl rounded-tr-none text-sm max-w-[80%] shadow-md">${escapeHtml(text)}</div>`;
     c.appendChild(d);
     lucide.createIcons();
@@ -1215,8 +1486,9 @@ function renderRecommendations(recs) {
                 ${rec.recommended_paper_year ? `<span>· ${escapeHtml(String(rec.recommended_paper_year))}</span>` : ''}
             </div>
             <p class="text-[11px] text-slate-500 leading-relaxed">${escapeHtml(rec.recommendation_reason || '')}</p>
+            ${rec.external_url ? `<a href="${escapeAttr(rec.external_url)}" target="_blank" class="inline-flex items-center gap-1 text-[10px] text-indigo-600 hover:underline"><i data-lucide="external-link" class="w-3 h-3"></i> 查看原文</a>` : ''}
             <div class="pt-1 border-t border-slate-50">
-                <span class="text-[10px] text-slate-300">源自: ${escapeHtml(truncate(rec.source_paper_title, 30))}</span>
+                <span class="text-[10px] text-slate-300">${rec.source_paper_title ? '源自: ' + escapeHtml(truncate(rec.source_paper_title, 30)) : '外部文献推荐'}</span>
             </div>
         `;
         grid.appendChild(card);
@@ -1246,9 +1518,8 @@ function switchSubmitTab(tabId) {
     } else {
         journalTab.classList.add('hidden');
         formatTab.classList.remove('hidden');
-        journalBtn.classList.add('active');
-        formatBtn.classList.add('active');
         journalBtn.classList.remove('active');
+        formatBtn.classList.add('active');
     }
     lucide.createIcons();
 }
@@ -1272,9 +1543,9 @@ async function loadJournalRecommendations() {
     action.classList.add('hidden');
 
     try {
-        const data = await api('POST', '/submit/recommend', {
+        const data = await (await api('POST', '/submit/recommend', {
             project_id: currentProjectId
-        });
+        })).json();
 
         loading.classList.add('hidden');
 
@@ -1334,8 +1605,8 @@ function renderJournalCards(journals) {
                 ${j.review_cycle && j.review_cycle !== 'N/A' ? `<span>周期: ${escapeHtml(j.review_cycle)}</span>` : ''}
                 ${j.acceptance_rate && j.acceptance_rate !== 'N/A' ? `<span>录用率: ${escapeHtml(String(j.acceptance_rate))}</span>` : ''}
             </div>
-            ${j.submission_url && j.submission_url !== 'N/A' ? `
-            <a href="${escapeHtml(j.submission_url)}" target="_blank" class="inline-flex items-center gap-1 text-[10px] font-bold text-indigo-600 hover:underline mt-1">
+            ${j.submission_url && j.submission_url !== 'N/A' && /^https?:\/\//i.test(j.submission_url) ? `
+            <a href="${escapeAttr(j.submission_url)}" target="_blank" class="inline-flex items-center gap-1 text-[10px] font-bold text-indigo-600 hover:underline mt-1">
                 <i data-lucide="external-link" class="w-3 h-3"></i> 投稿系统
             </a>` : ''}
         `;
@@ -1367,10 +1638,10 @@ async function runFormatCheck() {
     btn.disabled = true;
 
     try {
-        const data = await api('POST', '/submit/format-check', {
+        const data = await (await api('POST', '/submit/format-check', {
             project_id: currentProjectId,
             journal_name: journalName
-        });
+        })).json();
 
         loading.classList.add('hidden');
 
@@ -1498,7 +1769,8 @@ async function applySelectedFormats() {
     });
 
     // Group suggestions by implied section, apply to all sections
-    const sections = await api('GET', `/sections?project_id=${currentProjectId}`).catch(() => []);
+    const sectionsResp = await api('GET', `/sections?project_id=${currentProjectId}`).catch(() => null);
+    const sections = sectionsResp ? await sectionsResp.json() : [];
     if (!sections || sections.length === 0) {
         showToast('未找到可修改的章节', 'error');
         return;
@@ -1509,11 +1781,11 @@ async function applySelectedFormats() {
     let appliedCount = 0;
     for (const sec of sections) {
         try {
-            const res = await api('POST', '/submit/format-apply', {
+            const res = await (await api('POST', '/submit/format-apply', {
                 project_id: currentProjectId,
                 section_name: sec.section_name,
                 suggestions: selectedSuggestions
-            });
+            })).json();
             if (res.status === 'ok') appliedCount++;
         } catch (e) {
             console.error(`Apply failed for ${sec.section_name}:`, e);
@@ -1534,9 +1806,7 @@ function startNewSession() {
     const c = document.getElementById('dynamicChatContent');
     if (c) c.innerHTML = `
         <div class="flex gap-4 mb-8">
-            <div class="w-10 h-10 rounded-xl bg-slate-900 flex items-center justify-center text-white shadow-xl">
-                <i data-lucide="cpu"></i>
-            </div>
+            ${AI_AVATAR}
             <div class="max-w-[80%] bg-white border border-slate-200 p-6 rounded-3xl rounded-tl-none shadow-sm space-y-4">
                 <p class="text-slate-700 leading-relaxed text-sm">
                     CiteWise V3 协同系统已就绪。新对话已创建，我将自动调度 Agent 为您服务。
@@ -1545,6 +1815,9 @@ function startNewSession() {
         </div>`;
     lucide.createIcons();
     showToast('新对话已创建', 'success');
+    // Close history panel if open
+    const panel = document.getElementById('chatHistoryPanel');
+    if (panel) panel.classList.add('hidden');
 }
 
 async function loadSessionHistory() {
@@ -1562,14 +1835,96 @@ async function loadSessionHistory() {
             if (msg.role === 'user') {
                 appendUserMessage(msg.content);
             } else if (msg.role === 'assistant') {
+                const meta = msg.metadata || {};
+                const collabId = 'collab-hist-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+                const timeline = meta.agent_timeline || [];
+                const verification = meta.verification || null;
+                const msgSources = meta.sources || [];
+                const hasRichData = timeline.length > 0 || verification;
+
                 const d = document.createElement('div');
                 d.className = 'flex gap-4 mb-8 animate__animated animate__fadeInUp';
-                d.innerHTML = `
-                    <div class="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center text-white shrink-0">
-                        <i data-lucide="git-branch"></i>
-                    </div>
-                    <div class="flex-1 bg-white border border-slate-200 p-6 rounded-3xl text-sm leading-relaxed shadow-sm">${escapeHtml(msg.content)}</div>`;
-                c.appendChild(d);
+
+                if (hasRichData) {
+                    // Reconstruct rich layout: timeline card + response + verification
+                    const colors = {
+                        Supervisor: 'border-indigo-500', Researcher: 'border-blue-500',
+                        Responder: 'border-violet-500', Writer: 'border-amber-500', Analyst: 'border-emerald-500',
+                    };
+                    let timelineHtml = '';
+                    for (const step of timeline) {
+                        const borderColor = (colors[step.agent] || 'border-slate-400').replace('border-', '');
+                        const statusCls = step.status === 'done' ? 'collab-step completed' : 'collab-step';
+                        const durText = step.duration_ms ? ` (${step.duration_ms}ms)` : '';
+                        timelineHtml += `<div class="${statusCls}" style="border-left-color:${borderColor}">${step.agent}: ${step.detail || '完成'}${durText}</div>`;
+                    }
+
+                    let coveHtml = '';
+                    if (verification) {
+                        const coveError = verification.error;
+                        const score = verification.overall_score || 0;
+                        const claimCount = verification.claim_count || 0;
+                        const flaggedCount = verification.flagged_count || 0;
+                        if (coveError) {
+                            coveHtml = `<div class="cove-card">
+                                <div class="flex items-center gap-3 mb-2">
+                                    <span class="cove-score low"><i data-lucide="alert-triangle" class="w-4 h-4 inline"></i></span>
+                                    <div>
+                                        <div class="font-bold text-slate-700">事实性验证</div>
+                                        <div class="text-amber-600 text-xs">${claimCount > 0 ? `已提取 ${claimCount} 个声明，但` : ''}${escapeHtml(coveError)}</div>
+                                        <div class="text-slate-400 text-[10px] mt-1">建议稍后重新提问以触发验证</div>
+                                    </div>
+                                </div></div>`;
+                        } else {
+                            const scoreClass = score > 0.8 ? 'high' : (score > 0.5 ? 'medium' : 'low');
+                            let flaggedHtml = '';
+                            if (verification.flagged_claims && verification.flagged_claims.length > 0) {
+                                flaggedHtml = verification.flagged_claims.map(f =>
+                                    `<div class="cove-flagged-item"><strong>${escapeHtml(f.status)}</strong>: ${escapeHtml(f.claim)}${f.issue ? '<br><span class="text-slate-500">' + escapeHtml(f.issue) + '</span>' : ''}</div>`
+                                ).join('');
+                            }
+                            coveHtml = `<div class="cove-card">
+                                <div class="flex items-center gap-3 mb-2">
+                                    <span class="cove-score ${scoreClass}">${(score * 100).toFixed(0)}%</span>
+                                    <div>
+                                        <div class="font-bold text-slate-700">事实性验证</div>
+                                        <div class="text-slate-400">${claimCount} 个声明${flaggedCount > 0 ? '，<span class="text-red-500">' + flaggedCount + ' 个存疑</span>' : '，全部可信'}</div>
+                                    </div>
+                                </div>
+                                ${flaggedHtml ? '<details><summary class="cursor-pointer text-xs text-slate-500 font-bold">查看详情</summary>' + flaggedHtml + '</details>' : ''}</div>`;
+                        }
+                    }
+
+                    d.innerHTML = `
+                        ${AI_AVATAR}
+                        <div class="flex-1 space-y-4">
+                            <div class="bg-indigo-50 border border-indigo-100 p-6 rounded-3xl rounded-tl-none">
+                                <div class="flex items-center gap-2 mb-4">
+                                    <span class="text-[10px] font-bold text-indigo-600 uppercase tracking-widest">Multi-Agent 协作记录</span>
+                                </div>
+                                <div class="space-y-1 text-xs text-indigo-900/70">${timelineHtml}</div>
+                            </div>
+                            <div id="${collabId}-res" class="bg-white border border-slate-200 p-6 rounded-3xl text-sm leading-relaxed shadow-sm"></div>
+                            ${coveHtml}
+                        </div>`;
+                    c.appendChild(d);
+
+                    // Render source-annotated text
+                    const resBox = document.getElementById(collabId + '-res');
+                    if (resBox && msg.content) {
+                        renderCategorizedText(resBox, msg.content);
+                    }
+                } else {
+                    // Simple fallback for messages without rich metadata
+                    d.innerHTML = `
+                        ${AI_AVATAR}
+                        <div class="flex-1 bg-white border border-slate-200 p-6 rounded-3xl text-sm leading-relaxed shadow-sm"></div>`;
+                    c.appendChild(d);
+                    const resBox = d.querySelector('.bg-white.border-slate-200');
+                    if (resBox && msg.content) {
+                        renderCategorizedText(resBox, msg.content);
+                    }
+                }
             }
         }
         lucide.createIcons();
@@ -1579,15 +1934,193 @@ async function loadSessionHistory() {
     }
 }
 
-function completeStep(id) {
-    const el = document.getElementById(id);
-    if (!el) return;
-    if (el.classList.contains('completed')) return;
-    el.classList.add('completed');
-    el.classList.remove('active');
-    if (el.nextElementSibling) el.nextElementSibling.classList.add('active');
+// ---- Chat History Panel ----
+let _chatHistorySessions = [];
+
+function toggleChatHistory(e) {
+    if (e) e.stopPropagation();
+    const panel = document.getElementById('chatHistoryPanel');
+    if (!panel) return;
+    const wasHidden = panel.classList.contains('hidden');
+    if (wasHidden) {
+        // Position panel below the history button
+        const btn = document.getElementById('chatHistoryBtn');
+        if (btn) {
+            const rect = btn.getBoundingClientRect();
+            panel.style.top = (rect.bottom + 8) + 'px';
+            panel.style.right = (window.innerWidth - rect.right) + 'px';
+        }
+    }
+    panel.classList.toggle('hidden');
+    if (wasHidden) loadChatHistory();
+}
+
+async function loadChatHistory() {
+    if (!currentProjectId) return;
+    const listEl = document.getElementById('chatHistoryList');
+    const countEl = document.getElementById('chatHistoryCount');
+    if (!listEl) return;
+    listEl.innerHTML = '<div class="text-center text-slate-400 py-4 text-xs">加载中...</div>';
+    try {
+        const sessions = await (await api('GET', `/sessions?project_id=${currentProjectId}`)).json();
+        _chatHistorySessions = sessions || [];
+        if (countEl) countEl.textContent = `${sessions.length} 个会话`;
+        if (!sessions || sessions.length === 0) {
+            listEl.innerHTML = '<div class="text-center text-slate-400 py-4 text-xs">暂无历史对话</div>';
+            return;
+        }
+        renderChatHistoryList(sessions);
+    } catch (e) {
+        listEl.innerHTML = '<div class="text-center text-red-400 py-4 text-xs">加载失败</div>';
+        console.error('Load chat history failed:', e);
+    }
+}
+
+function renderChatHistoryList(sessions) {
+    const listEl = document.getElementById('chatHistoryList');
+    if (!listEl) return;
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const yesterday = new Date(today.getTime() - 86400000);
+    const weekAgo = new Date(today.getTime() - 6 * 86400000);
+
+    const groups = { today: [], yesterday: [], week: [], older: [] };
+    for (const s of sessions) {
+        const d = s.created_at ? new Date(s.created_at + 'Z') : now;
+        if (d >= today) groups.today.push(s);
+        else if (d >= yesterday) groups.yesterday.push(s);
+        else if (d >= weekAgo) groups.week.push(s);
+        else groups.older.push(s);
+    }
+
+    const labels = { today: '今天', yesterday: '昨天', week: '近 7 天', older: '更早' };
+    let html = '';
+    for (const [key, items] of Object.entries(groups)) {
+        if (items.length === 0) continue;
+        html += `<div class="text-[10px] font-bold text-slate-400 uppercase tracking-wider px-1 pt-2 pb-1">${labels[key]}</div>`;
+        html += items.map(s => _renderSessionItem(s)).join('');
+    }
+    listEl.innerHTML = html || '<div class="text-center text-slate-400 py-4 text-xs">无匹配结果</div>';
     lucide.createIcons();
 }
+
+function _renderSessionItem(s) {
+    const isActive = s.id === currentSessionId;
+    const title = s.title || '未命名对话';
+    const time = s.created_at ? new Date(s.created_at + (s.created_at.includes('Z') ? '' : 'Z')).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+    return `<div class="group flex items-center gap-2 p-2.5 rounded-lg cursor-pointer transition-all ${isActive ? 'bg-indigo-50 border border-indigo-200' : 'hover:bg-slate-50'}" data-action="loadSession" data-session-id="${escapeAttr(s.id)}">
+        <i data-lucide="message-square" class="w-3.5 h-3.5 shrink-0 ${isActive ? 'text-indigo-500' : 'text-slate-400'}"></i>
+        <div class="flex-1 min-w-0">
+            <div class="text-xs font-semibold ${isActive ? 'text-indigo-700' : 'text-slate-700'} truncate" data-action="renameSession" data-session-id="${escapeAttr(s.id)}">${escapeHtml(title)}</div>
+            <div class="text-[10px] text-slate-400">${time}</div>
+        </div>
+        <button class="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-red-50 hover:text-red-500 text-slate-300 transition-all shrink-0" data-action="deleteSession" data-session-id="${escapeAttr(s.id)}" title="删除">
+            <i data-lucide="trash-2" class="w-3 h-3"></i>
+        </button>
+    </div>`;
+}
+
+function filterChatHistory(query) {
+    const q = query.trim().toLowerCase();
+    if (!q) {
+        renderChatHistoryList(_chatHistorySessions);
+        return;
+    }
+    const filtered = _chatHistorySessions.filter(s =>
+        (s.title || '未命名对话').toLowerCase().includes(q)
+    );
+    renderChatHistoryList(filtered);
+}
+
+// Event delegation for chat history actions
+document.addEventListener('click', (e) => {
+    // Delete session
+    const delBtn = e.target.closest('[data-action="deleteSession"]');
+    if (delBtn) {
+        e.stopPropagation();
+        const sid = delBtn.dataset.sessionId;
+        if (sid && confirm('确定删除该对话？')) {
+            api('DELETE', `/sessions/${sid}`).then(() => {
+                if (currentSessionId === sid) {
+                    currentSessionId = null;
+                    localStorage.removeItem('citewise_session');
+                    startNewSession();
+                }
+                loadChatHistory();
+                showToast('对话已删除', 'success');
+            }).catch(e => showToast('删除失败: ' + e.message, 'error'));
+        }
+        return;
+    }
+    // Load session
+    const loadBtn = e.target.closest('[data-action="loadSession"]');
+    if (loadBtn) {
+        e.stopPropagation();
+        const sid = loadBtn.dataset.sessionId;
+        if (sid) switchToSession(sid);
+        return;
+    }
+});
+
+// Double-click to rename session
+document.addEventListener('dblclick', (e) => {
+    const renameEl = e.target.closest('[data-action="renameSession"]');
+    if (!renameEl) return;
+    e.stopPropagation();
+    const sid = renameEl.dataset.sessionId;
+    if (!sid) return;
+    const oldTitle = renameEl.textContent.trim();
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = oldTitle;
+    input.className = 'w-full text-xs font-semibold text-slate-700 bg-indigo-50 border border-indigo-300 rounded px-1 py-0.5 outline-none focus:ring-1 focus:ring-indigo-500';
+    renameEl.replaceWith(input);
+    input.focus();
+    input.select();
+
+    const save = async () => {
+        const newTitle = input.value.trim() || oldTitle;
+        if (newTitle !== oldTitle) {
+            try {
+                await api('PATCH', `/sessions/${sid}`, { title: newTitle });
+                showToast('已重命名', 'success');
+            } catch (err) {
+                showToast('重命名失败', 'error');
+            }
+        }
+        loadChatHistory();
+    };
+    input.addEventListener('blur', save);
+    input.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') input.blur();
+        if (ev.key === 'Escape') { input.value = oldTitle; input.blur(); }
+    });
+});
+
+async function switchToSession(sessionId) {
+    currentSessionId = sessionId;
+    localStorage.setItem('citewise_session', JSON.stringify(currentSessionId));
+    // Close panel
+    const panel = document.getElementById('chatHistoryPanel');
+    if (panel) panel.classList.add('hidden');
+    // Load messages
+    const c = document.getElementById('dynamicChatContent');
+    if (c) c.innerHTML = '';
+    await loadSessionHistory();
+    // Update active state in history list
+    document.querySelectorAll('[data-action="loadSession"]').forEach(el => {
+        const isActive = el.dataset.sessionId === sessionId;
+        el.className = `group flex items-center gap-2 p-2.5 rounded-lg cursor-pointer transition-all ${isActive ? 'bg-indigo-50 border border-indigo-200' : 'hover:bg-slate-50'}`;
+    });
+}
+
+// Close history panel on click outside
+window.addEventListener('click', (e) => {
+    const panel = document.getElementById('chatHistoryPanel');
+    if (panel && !panel.classList.contains('hidden') && !e.target.closest('#chatHistoryPanel') && !e.target.closest('[onclick*="toggleChatHistory"]')) {
+        panel.classList.add('hidden');
+    }
+});
 
 // ============ Extraction ============
 function renderFields() {
@@ -1651,18 +2184,6 @@ async function runExtraction() {
     } catch (e) {
         document.getElementById('extractionLoader').classList.add('hidden');
         showToast('提取失败: ' + e.message, 'error');
-    }
-    lucide.createIcons();
-}
-
-function runCustomExtraction() {
-    safeClassAction('extractionConfigView', 'add', 'hidden');
-    safeClassAction('extractionResultView', 'remove', 'hidden');
-    const head = document.getElementById('extractionTableHead');
-    const body = document.getElementById('extractionTableBody');
-    if (head && body) {
-        head.innerHTML = `<tr class="border-b bg-slate-50/50 text-[10px] font-bold uppercase tracking-wider"><th class="p-6">文献</th>${extractionFields.map(f => `<th class="p-6">${escapeHtml(f)}</th>`).join('')}</tr>`;
-        body.innerHTML = '<tr class="border-b text-xs text-slate-600"><td class="p-6" colspan="' + (extractionFields.length + 1) + '">正在提取中...</td></tr>';
     }
     lucide.createIcons();
 }
@@ -1768,7 +2289,7 @@ function renderAgentStatus() {
     if (!c) return;
     c.innerHTML = agents.map(a => {
         const statusColor = a.status === 'RUNNING' ? 'text-amber-500' : 'text-green-500';
-        return `<div onclick="switchView('agentView', document.getElementById('navAgent')); setTimeout(() => openAgentDetail('${a.id}'), 100)" class="agent-item flex items-center justify-between p-2 px-3 bg-slate-50/50 rounded-lg border border-slate-100 mb-2 text-[11px] cursor-pointer hover:bg-indigo-50 hover:border-indigo-100 transition-all">
+        return `<div onclick="switchView('agentHubView', document.getElementById('navAgentHub')); setTimeout(() => openAgentDetail('${a.id}'), 100)" class="agent-item flex items-center justify-between p-2 px-3 bg-slate-50/50 rounded-lg border border-slate-100 mb-2 text-[11px] cursor-pointer hover:bg-indigo-50 hover:border-indigo-100 transition-all">
             <span class="flex items-center gap-2">
                 <i data-lucide="${a.icon}" class="w-3 h-3 text-${a.color}-500"></i>
                 ${escapeHtml(a.name)}
@@ -1832,19 +2353,32 @@ function renderAgentCards() {
 function openAgentDetail(agentId) {
     const a = agents.find(x => x.id === agentId);
     if (!a) return;
-    safeClassAction('agentListView', 'add', 'hidden');
-    safeClassAction('agentDetailView', 'remove', 'hidden');
+
+    // Detect context: if agentHubView is active, use hub detail panel
+    const hubView = document.getElementById('agentHubView');
+    const inHub = hubView && !hubView.classList.contains('hidden') && hubView.classList.contains('active');
+    if (inHub) {
+        // Hide config/eval tabs, show hub detail panel
+        safeClassAction('agentConfigTab', 'add', 'hidden');
+        safeClassAction('agentEvalTab', 'add', 'hidden');
+        safeClassAction('hubAgentDetail', 'remove', 'hidden');
+    } else {
+        // Legacy path: toggle within agentView
+        safeClassAction('agentListView', 'add', 'hidden');
+        safeClassAction('agentDetailView', 'remove', 'hidden');
+    }
 
     const assignedSkills = skills.filter(s => s.agent === agentId);
     const availableSkills = skills.filter(s => s.agent !== agentId);
     const assignedTools = tools.filter(t => t.agent === agentId);
     const availableTools = tools.filter(t => t.agent !== agentId);
 
-    const el = document.getElementById('agentDetailContent');
+    const el = inHub ? document.getElementById('hubAgentDetailContent') : document.getElementById('agentDetailContent');
     if (!el) return;
 
     el.innerHTML = `
         <div class="max-w-4xl mx-auto space-y-8">
+            <button onclick="closeAgentDetail()" class="flex items-center gap-2 text-sm text-slate-500 hover:text-slate-700 mb-2"><i data-lucide="arrow-left" class="w-4 h-4"></i> 返回列表</button>
             <div class="p-8 bg-${a.color}-50 rounded-3xl flex items-center gap-6">
                 <div class="p-4 bg-${a.color}-100 rounded-2xl"><i data-lucide="${a.icon}" class="w-10 h-10 text-${a.color}-600"></i></div>
                 <div class="flex-1">
@@ -1945,8 +2479,16 @@ function openAgentDetail(agentId) {
 }
 
 function closeAgentDetail() {
-    safeClassAction('agentListView', 'remove', 'hidden');
-    safeClassAction('agentDetailView', 'add', 'hidden');
+    // Check if we're in hub context
+    const hubView = document.getElementById('agentHubView');
+    const inHub = hubView && !hubView.classList.contains('hidden') && hubView.classList.contains('active');
+    if (inHub) {
+        safeClassAction('hubAgentDetail', 'add', 'hidden');
+        safeClassAction('agentConfigTab', 'remove', 'hidden');
+    } else {
+        safeClassAction('agentListView', 'remove', 'hidden');
+        safeClassAction('agentDetailView', 'add', 'hidden');
+    }
 }
 
 function saveAgentPrompt(agentId) {
@@ -2435,10 +2977,6 @@ function deleteApiKeyByIndex(index) {
     showToast('API Key 已删除', 'success');
 }
 
-function deleteApiKey() {
-    // Legacy — now handled by deleteApiKeyByIndex
-}
-
 async function verifyAndSaveApiKey() {
     const provider = document.getElementById('keyProviderSelect')?.value || 'zhipu';
     const apiKey = document.getElementById('keyValueInput')?.value.trim() || '';
@@ -2532,9 +3070,6 @@ async function verifyAndSaveApiKey() {
 }
 
 // ============ TTS Placeholder ============
-function simulateTTS() {
-    showToast('生成播报中...', 'success');
-}
 
 // ============ UI Helpers ============
 function safeClassAction(id, action, className) {
@@ -2585,6 +3120,17 @@ function toggleModal(id) {
     const el = document.getElementById(id);
     if (el) el.classList.toggle('hidden');
     if (id === 'summaryModal') renderFields();
+    if (id === 'newDraftModal' && !el?.classList.contains('hidden')) populateDraftAgents();
+}
+
+function populateDraftAgents() {
+    const select = document.getElementById('draftAgent');
+    if (!select) return;
+    const agentList = (typeof agents !== 'undefined' && agents) ? agents : [];
+    select.innerHTML = agentList.map(a => {
+        const role = a.prompt ? ` — ${a.prompt.slice(0, 30)}${a.prompt.length > 30 ? '...' : ''}` : '';
+        return `<option value="${escapeAttr(a.id)}">${escapeHtml(a.name)}${role}</option>`;
+    }).join('');
 }
 
 function toggleDropdown(id, e) {
@@ -2659,7 +3205,9 @@ async function loadNoteTypes() {
         if (filter) {
             filter.innerHTML = '<option value="">全部类型</option>' + types.map(t => `<option value="${escapeHtml(t.name)}">${escapeHtml(t.name)}</option>`).join('');
         }
-    } catch (e) { /* silent */ }
+    } catch (e) {
+        console.error('Load note types failed:', e);
+    }
 }
 
 function openNoteTypeManager() {
@@ -3206,6 +3754,7 @@ async function handleAuth() {
         updateAuthUI();
         closeAuthModal();
         showToast(authMode === 'login' ? '登录成功' : '注册成功', 'success');
+        await loadProjects();
     } catch (e) {
         if (errEl) { errEl.textContent = '网络错误: ' + e.message; errEl.classList.remove('hidden'); }
     }
@@ -3214,7 +3763,10 @@ async function handleAuth() {
 function logout() {
     currentUser = null;
     localStorage.removeItem('citewise_user');
+    currentProjectId = null;
     updateAuthUI();
+    const c = document.getElementById('projectListContainer');
+    if (c) c.innerHTML = '<div class="text-center text-slate-400 py-8 text-xs">请登录后查看项目</div>';
     showToast('已登出', 'success');
 }
 

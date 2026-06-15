@@ -3,7 +3,7 @@ import logging
 
 from fastapi import APIRouter, Depends
 
-from api.deps import require_auth
+from api.deps import require_auth, verify_project_owner
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -12,6 +12,7 @@ router = APIRouter()
 @router.get("/knowledge-map")
 async def get_knowledge_map(project_id: str, user: dict = Depends(require_auth)):
     """获取文献关系图数据（节点 + 边）"""
+    verify_project_owner(project_id, user["user_id"])
     from src.core.memory import project_memory
     from src.core.recommender import get_paper_embeddings, compute_similarity_matrix, build_citation_graph
 

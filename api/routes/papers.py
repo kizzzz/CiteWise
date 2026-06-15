@@ -9,7 +9,7 @@ from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
-from api.deps import require_auth
+from api.deps import require_auth, verify_project_owner
 from config.settings import PAPERS_DIR
 
 logger = logging.getLogger(__name__)
@@ -22,6 +22,7 @@ from src.core.file_parser import is_supported, get_file_extension, parse_file
 
 @router.get("/papers")
 async def list_papers(project_id: str, user: dict = Depends(require_auth)):
+    verify_project_owner(project_id, user["user_id"])
     from src.core.memory import project_memory
     return project_memory.get_papers(project_id)
 
@@ -29,6 +30,7 @@ async def list_papers(project_id: str, user: dict = Depends(require_auth)):
 @router.post("/papers/upload")
 async def upload_papers(files: list[UploadFile] = File(...), project_id: str = Form(...), user: dict = Depends(require_auth)):
     """上传论文 — JSON 响应（适合简单前端）"""
+    verify_project_owner(project_id, user["user_id"])
     result = await _process_uploads(files, project_id)
     return result
 
@@ -36,6 +38,7 @@ async def upload_papers(files: list[UploadFile] = File(...), project_id: str = F
 @router.post("/papers/upload/stream")
 async def upload_papers_stream(files: list[UploadFile] = File(...), project_id: str = Form(...), user: dict = Depends(require_auth)):
     """上传论文 — SSE 流式返回进度（适合需要实时进度的前端）"""
+    verify_project_owner(project_id, user["user_id"])
     async def progress_generator():
         from src.core.rag import chunk_paper
         from src.core.memory import project_memory
@@ -220,6 +223,7 @@ async def delete_paper(paper_id: str, project_id: str = "", user: dict = Depends
     """删除论文及其向量索引"""
     if not project_id:
         raise HTTPException(status_code=400, detail="project_id is required")
+    verify_project_owner(project_id, user["user_id"])
 
     from src.core.memory import project_memory
     from src.core.embedding import vector_store

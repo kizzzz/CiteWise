@@ -7,8 +7,8 @@ import time
 from fastapi import APIRouter, HTTPException, Depends
 from sse_starlette.sse import EventSourceResponse
 
-from api.deps import require_auth
-from api.schemas import ChatRequest, SubChatRequest
+from api.deps import require_auth, verify_project_owner
+from api.schemas import ChatRequest, SubChatRequest, SessionRenameRequest
 from src.eval.metrics import record_eval
 
 logger = logging.getLogger(__name__)
@@ -29,6 +29,7 @@ async def chat_endpoint(req: ChatRequest, user: dict = Depends(require_auth)):
         raise HTTPException(status_code=422, detail=f"Message must not exceed {MAX_MESSAGE_LENGTH} characters")
     if not req.project_id or not req.project_id.strip():
         raise HTTPException(status_code=422, detail="project_id must not be empty")
+    verify_project_owner(req.project_id, user["user_id"])
 
     async def event_generator():
         try:
@@ -59,6 +60,7 @@ async def sub_chat_endpoint(req: SubChatRequest, user: dict = Depends(require_au
         raise HTTPException(status_code=422, detail=f"Message must not exceed {MAX_MESSAGE_LENGTH} characters")
     if not req.project_id or not req.project_id.strip():
         raise HTTPException(status_code=422, detail="project_id must not be empty")
+    verify_project_owner(req.project_id, user["user_id"])
     start_time = time.time()
     try:
         from src.core.agents.coordinator import coordinator
@@ -75,6 +77,8 @@ async def sub_chat_endpoint(req: SubChatRequest, user: dict = Depends(require_au
             augmented_prompt, req.project_id,
             intent="modify",
             target_content=req.content,
+            api_key=req.api_key or None,
+            base_url=req.base_url or None,
         )
 
         content = result.get("content", "")
@@ -117,7 +121,7 @@ async def sub_chat_endpoint(req: SubChatRequest, user: dict = Depends(require_au
         }
     except Exception as e:
         logger.error(f"Sub-chat error: {e}", exc_info=True)
-        return {"content": "处理出错，请稍后重试", "type": "error"}
+        raise HTTPException(status_code=500, detail="处理出错，请稍后重试")
 
 
 # --- Session Management ---
@@ -125,6 +129,7 @@ async def sub_chat_endpoint(req: SubChatRequest, user: dict = Depends(require_au
 @router.get("/sessions")
 async def list_sessions(project_id: str, user: dict = Depends(require_auth)):
     """列出项目的对话会话"""
+    verify_project_owner(project_id, user["user_id"])
     from src.core.memory import project_memory
     sessions = project_memory.list_sessions(project_id)
     return sessions
@@ -134,6 +139,10 @@ async def list_sessions(project_id: str, user: dict = Depends(require_auth)):
 async def get_session_messages(session_id: str, limit: int = 20, user: dict = Depends(require_auth)):
     """获取会话消息历史"""
     from src.core.memory import project_memory
+    session = project_memory.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    verify_project_owner(session.get("project_id", ""), user["user_id"])
     messages = project_memory.get_session_messages(session_id, limit=limit)
     return messages
 
@@ -142,13 +151,32 @@ async def get_session_messages(session_id: str, limit: int = 20, user: dict = De
 async def delete_session(session_id: str, user: dict = Depends(require_auth)):
     """删除对话会话"""
     from src.core.memory import project_memory
+    session = project_memory.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    verify_project_owner(session.get("project_id", ""), user["user_id"])
     project_memory.delete_session(session_id)
+    return {"status": "ok"}
+
+
+@router.patch("/sessions/{session_id}")
+async def rename_session(session_id: str, req: SessionRenameRequest, user: dict = Depends(require_auth)):
+    """重命名对话会话"""
+    from src.core.memory import project_memory
+    session = project_memory.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    verify_project_owner(session.get("project_id", ""), user["user_id"])
+    ok = project_memory.update_session_title(session_id, req.title)
+    if not ok:
+        raise HTTPException(status_code=500, detail="更新失败")
     return {"status": "ok"}
 
 
 @router.post("/sessions")
 async def create_session(project_id: str, title: str = "", user: dict = Depends(require_auth)):
     """创建新的对话会话"""
+    verify_project_owner(project_id, user["user_id"])
     from src.core.memory import project_memory
     session_id = project_memory.create_session(project_id, title)
     return {"session_id": session_id}

@@ -111,7 +111,7 @@ async def verify_api_key(req: ApiKeyVerifyRequest):
         return {"valid": False, "message": "无法连接服务器，请检查 Base URL 是否正确"}
     except Exception as e:
         logger.error(f"API Key 验证请求失败: {e}")
-        return {"valid": False, "message": f"验证请求失败: {str(e)}"}
+        return {"valid": False, "message": "验证请求失败，请检查网络或代理设置"}
 
 
 @router.post("/apikeys/save")

@@ -33,24 +33,27 @@ class QueryCache:
         self._store: dict[str, tuple[list, float]] = {}
         self._ttl = ttl
         self._max_size = max_size
+        import threading
+        self._lock = threading.Lock()
 
     def get(self, key: str) -> Optional[list[dict]]:
-        if key not in self._store:
-            return None
-        results, ts = self._store[key]
-        import time
-        if time.time() - ts > self._ttl:
-            del self._store[key]
-            return None
-        return results
+        with self._lock:
+            if key not in self._store:
+                return None
+            results, ts = self._store[key]
+            import time
+            if time.time() - ts > self._ttl:
+                del self._store[key]
+                return None
+            return results
 
     def set(self, key: str, results: list[dict]):
         import time
-        if len(self._store) >= self._max_size:
-            # 淘汰最旧的
-            oldest_key = min(self._store, key=lambda k: self._store[k][1])
-            del self._store[oldest_key]
-        self._store[key] = (results, time.time())
+        with self._lock:
+            if len(self._store) >= self._max_size:
+                oldest_key = min(self._store, key=lambda k: self._store[k][1])
+                del self._store[oldest_key]
+            self._store[key] = (results, time.time())
 
     def _make_key(self, query: str, intent: str = "", project_id: str = "") -> str:
         return f"{query}::{intent}::{project_id}"
@@ -368,8 +371,8 @@ def hybrid_search(query: str, top_k: int = RERANK_TOP_K, where: dict = None,
                   project_id: str = None, intent: str = "explore") -> list[dict]:
     """混合检索主入口：查询改写 → 多查询 → 向量 + BM25 → RRF 融合 → 重排序
 
-    project_id 参数接受但不用于过滤（Chroma metadata 中无此字段），
-    保留参数以兼容调用方签名。后续可按 paper_id 列表过滤。
+    project_id 参数用于按项目过滤：查询 SQLite 获取该项目所有 paper_ids，
+    然后构造 ChromaDB where 条件，确保检索结果仅来自当前项目的文献。
     """
     # Phase 3B: 查缓存
     cache_key = query_cache._make_key(query, intent, project_id or "")
@@ -386,13 +389,35 @@ def hybrid_search(query: str, top_k: int = RERANK_TOP_K, where: dict = None,
     rerank_top_k = params.get("rerank_top_k", top_k or RERANK_TOP_K)
     prefer_levels = params.get("prefer_levels")
 
-    # 构建 where 过滤（意图感知的 level 过滤）
+    # 构建 where 过滤
     search_where = where
+    filter_paper_ids = None  # 用于 BM25 后过滤
+
+    # 按项目过滤：从 SQLite 查出该项目所有 paper_ids，构造 ChromaDB where 条件
+    if project_id:
+        try:
+            from src.core.memory import project_memory
+            project_papers = project_memory.get_papers(project_id)
+            paper_ids = [p["id"] for p in project_papers]
+            if paper_ids:
+                project_where = {"paper_id": {"$in": paper_ids}}
+                if search_where:
+                    search_where = {"$and": [search_where, project_where]}
+                else:
+                    search_where = project_where
+                filter_paper_ids = set(paper_ids)  # BM25 不支持 where，需后过滤
+                logger.info(f"项目过滤: {len(paper_ids)} 篇文献")
+            else:
+                logger.info(f"项目 {project_id} 无文献，跳过检索")
+                return []
+        except Exception as e:
+            logger.warning(f"项目过滤查询失败: {e}")
+
     if prefer_levels and ENABLE_INTENT_RETRIEVAL:
         # 先尝试在优选 level 中检索
         level_where = {"section_level": {"$in": prefer_levels}}
-        if where:
-            search_where = {"$and": [where, level_where]}
+        if search_where:
+            search_where = {"$and": [search_where, level_where]}
         else:
             search_where = level_where
 
@@ -408,10 +433,10 @@ def hybrid_search(query: str, top_k: int = RERANK_TOP_K, where: dict = None,
         per_query_k = max(vector_top_k // len(subqueries), 5)
         for sq in subqueries:
             _collect_candidates(sq, per_query_k, bm25_top_k // len(subqueries),
-                                search_where, all_candidates, seen_ids)
+                                search_where, all_candidates, seen_ids, filter_paper_ids)
     else:
         _collect_candidates(search_query, vector_top_k, bm25_top_k,
-                            search_where, all_candidates, seen_ids)
+                            search_where, all_candidates, seen_ids, filter_paper_ids)
 
     # 如果 level 过滤结果不够，回退全量
     if prefer_levels and len(all_candidates) < 3 and search_where != where:
@@ -419,7 +444,7 @@ def hybrid_search(query: str, top_k: int = RERANK_TOP_K, where: dict = None,
         all_candidates = []
         seen_ids = set()
         _collect_candidates(search_query, vector_top_k, bm25_top_k,
-                            where, all_candidates, seen_ids)
+                            where, all_candidates, seen_ids, filter_paper_ids)
 
     if not all_candidates:
         return []
@@ -462,21 +487,30 @@ def hybrid_search(query: str, top_k: int = RERANK_TOP_K, where: dict = None,
 
 
 def _collect_candidates(query: str, vector_top_k: int, bm25_top_k: int,
-                        where: dict, all_candidates: list, seen_ids: set):
-    """收集向量 + BM25 候选，去重"""
-    # 向量检索
+                        where: dict, all_candidates: list, seen_ids: set,
+                        filter_paper_ids: set = None):
+    """收集向量 + BM25 候选，去重
+
+    filter_paper_ids: 如果提供，BM25 结果将按 paper_id 过滤（BM25 不支持 where 查询）
+    """
+    # 向量检索（已通过 where 参数过滤）
     vector_results = vector_store.vector_search(query, top_k=vector_top_k, where=where)
     for v in vector_results:
         if v["chunk_id"] not in seen_ids:
             seen_ids.add(v["chunk_id"])
             all_candidates.append(v)
 
-    # BM25 检索
+    # BM25 检索（不支持 where，需后过滤）
     bm25_results = bm25_index.search(query, top_k=bm25_top_k)
     for b in bm25_results:
-        if b["chunk_id"] not in seen_ids:
-            seen_ids.add(b["chunk_id"])
-            all_candidates.append(b)
+        if b["chunk_id"] in seen_ids:
+            continue
+        if filter_paper_ids:
+            meta = b.get("metadata", {})
+            if meta.get("paper_id") not in filter_paper_ids:
+                continue
+        seen_ids.add(b["chunk_id"])
+        all_candidates.append(b)
 
 
 def format_chunks_with_citations(chunks: list[dict]) -> str:

@@ -7,7 +7,7 @@ import logging
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 
-from api.deps import require_auth
+from api.deps import require_auth, verify_project_owner
 from api.schemas import ExtractionRequest, FieldsRequest
 
 logger = logging.getLogger(__name__)
@@ -33,6 +33,7 @@ async def save_fields(req: FieldsRequest, user: dict = Depends(require_auth)):
 
 @router.post("/extraction")
 async def run_extraction(req: ExtractionRequest, user: dict = Depends(require_auth)):
+    verify_project_owner(req.project_id, user["user_id"])
     if not req.fields:
         raise HTTPException(status_code=422, detail="Fields list must not be empty")
     if len(req.fields) > MAX_FIELDS_COUNT:
@@ -86,6 +87,7 @@ async def run_extraction(req: ExtractionRequest, user: dict = Depends(require_au
 @router.get("/extraction/export")
 async def export_extraction(project_id: str, user: dict = Depends(require_auth)):
     """导出结构化提取结果为 Excel 文件"""
+    verify_project_owner(project_id, user["user_id"])
     import pandas as pd
     from src.core.memory import project_memory
 

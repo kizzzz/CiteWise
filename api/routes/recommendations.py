@@ -3,7 +3,7 @@ import logging
 
 from fastapi import APIRouter, Depends
 
-from api.deps import require_auth
+from api.deps import require_auth, verify_project_owner
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -12,6 +12,7 @@ router = APIRouter()
 @router.get("/recommendations")
 async def get_recommendations(project_id: str, top_k: int = 5, user: dict = Depends(require_auth)):
     """获取文献推荐"""
+    verify_project_owner(project_id, user["user_id"])
     from src.core.recommender import get_recommendations
 
     try:

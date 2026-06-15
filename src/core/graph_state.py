@@ -41,3 +41,7 @@ class AgentState(TypedDict, total=False):
     target_content: str     # modify 时的原文
     framework: list         # 章节框架
     gen_params: dict        # 生成参数 {style, target_length, citation_density}
+    section_id: str         # 保存后的章节 ID
+    agent_choice: str       # 用户选择的生成 Agent（writer/analyst）
+    system_prompt: str      # 用户自建 Agent 的系统提示词
+    requirements: str       # 章节要求：简述、重点、格式等

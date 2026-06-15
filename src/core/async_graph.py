@@ -222,10 +222,13 @@ async def stream_chat_response(user_input: str, project_id: str,
     from src.core.llm import llm_client
     from src.core.prompt import SYSTEM_PROMPT_BASE, prompt_engine
     from src.core.source_annotation import annotate_sources
-    from src.core.retriever import validate_citations, hybrid_search
+    from src.core.retriever import validate_citations, hybrid_search, format_chunks_with_citations
     from src.core.memory import project_memory
 
     start_time = time.time()
+
+    # --- Collect agent timeline events for metadata ---
+    agent_timeline = []
 
     # --- Session management ---
     if not session_id:
@@ -241,12 +244,15 @@ async def stream_chat_response(user_input: str, project_id: str,
     project_memory.save_message(session_id, project_id, "user", user_input)
 
     # Step 1: Route intent (sync, fast)
+    agent_timeline.append({"agent": "Supervisor", "detail": "分析意图...", "status": "running"})
     yield {"event": "agent_start", "data": json.dumps({
         "agent": "Supervisor", "detail": "分析意图..."
     }, ensure_ascii=False)}
 
     route_result = _router.process(user_input, project_id)
     intent = route_result.get("intent", "explore")
+    agent_timeline[-1]["status"] = "done"
+    agent_timeline[-1]["detail"] = f"意图: {intent}"
     yield {"event": "agent_end", "data": json.dumps({
         "agent": "Supervisor", "detail": f"意图: {intent}"
     }, ensure_ascii=False)}
@@ -256,6 +262,7 @@ async def stream_chat_response(user_input: str, project_id: str,
     web_results = []
     rag_content = ""
 
+    agent_timeline.append({"agent": "Researcher", "detail": "检索知识库...", "status": "running"})
     yield {"event": "agent_start", "data": json.dumps({
         "agent": "Researcher", "detail": "检索知识库..."
     }, ensure_ascii=False)}
@@ -263,10 +270,7 @@ async def stream_chat_response(user_input: str, project_id: str,
     try:
         chunks = hybrid_search(user_input, project_id=project_id, intent=intent)
         if chunks:
-            rag_parts = []
-            for i, c in enumerate(chunks[:10]):
-                rag_parts.append(f"[{i+1}] {c.get('paper_title', '')} ({c.get('year', '')}): {c['text'][:300]}")
-            rag_content = "\n\n".join(rag_parts)
+            rag_content = format_chunks_with_citations(chunks[:10])
     except Exception as e:
         logger.warning(f"RAG 检索失败: {e}")
 
@@ -278,10 +282,15 @@ async def stream_chat_response(user_input: str, project_id: str,
         except Exception as e:
             logger.warning(f"联网搜索失败: {e}")
 
+    research_detail = f"检索完成: {len(chunks)} 文献片段" + (f", {len(web_results)} 网络结果" if web_results else "")
+    research_duration = int((time.time() - start_time) * 1000)
+    agent_timeline[-1]["status"] = "done"
+    agent_timeline[-1]["detail"] = research_detail
+    agent_timeline[-1]["duration_ms"] = research_duration
     yield {"event": "agent_end", "data": json.dumps({
         "agent": "Researcher",
-        "detail": f"检索完成: {len(chunks)} 文献片段" + (f", {len(web_results)} 网络结果" if web_results else ""),
-        "duration_ms": int((time.time() - start_time) * 1000),
+        "detail": research_detail,
+        "duration_ms": research_duration,
     }, ensure_ascii=False)}
 
     # Step 3: Route to appropriate agent for streaming response
@@ -289,6 +298,7 @@ async def stream_chat_response(user_input: str, project_id: str,
 
     if is_writer_intent:
         # --- Writer path: stream section generation ---
+        agent_timeline.append({"agent": "Writer", "detail": f"处理: {intent}", "status": "running"})
         yield {"event": "agent_start", "data": json.dumps({
             "agent": "Writer", "detail": f"处理: {intent}"
         }, ensure_ascii=False)}
@@ -319,8 +329,12 @@ async def stream_chat_response(user_input: str, project_id: str,
         content_type = "section"
 
         elapsed = int((time.time() - start_time) * 1000)
+        writer_detail = f"生成 {len(full_response)} 字"
+        agent_timeline[-1]["status"] = "done"
+        agent_timeline[-1]["detail"] = writer_detail
+        agent_timeline[-1]["duration_ms"] = elapsed
         yield {"event": "agent_end", "data": json.dumps({
-            "agent": "Writer", "detail": f"生成 {len(full_response)} 字",
+            "agent": "Writer", "detail": writer_detail,
             "duration_ms": elapsed,
         }, ensure_ascii=False)}
 
@@ -330,6 +344,7 @@ async def stream_chat_response(user_input: str, project_id: str,
 
     else:
         # --- Responder path: stream discussion response ---
+        agent_timeline.append({"agent": "Responder", "detail": "生成回答...", "status": "running"})
         yield {"event": "agent_start", "data": json.dumps({
             "agent": "Responder", "detail": "生成回答..."
         }, ensure_ascii=False)}
@@ -364,8 +379,12 @@ async def stream_chat_response(user_input: str, project_id: str,
         content_type = "text"
 
         elapsed = int((time.time() - start_time) * 1000)
+        responder_detail = f"生成 {len(full_response)} 字"
+        agent_timeline[-1]["status"] = "done"
+        agent_timeline[-1]["detail"] = responder_detail
+        agent_timeline[-1]["duration_ms"] = elapsed
         yield {"event": "agent_end", "data": json.dumps({
-            "agent": "Responder", "detail": f"生成 {len(full_response)} 字",
+            "agent": "Responder", "detail": responder_detail,
             "duration_ms": elapsed,
         }, ensure_ascii=False)}
 
@@ -403,16 +422,41 @@ async def stream_chat_response(user_input: str, project_id: str,
                 "claim_count": len(cove_result.get("claims", [])),
                 "flagged_count": len(cove_result.get("flagged_claims", [])),
                 "flagged_claims": cove_result.get("flagged_claims", []),
+                "error": cove_result.get("error"),
             }, ensure_ascii=False)}
         except Exception as e:
             logger.warning(f"CoVe 验证失败（非致命）: {e}")
 
     yield {"event": "done", "data": json.dumps({"type": content_type}, ensure_ascii=False)}
 
+    # Build metadata for rich history reconstruction
+    _msg_metadata = {
+        "agent_timeline": agent_timeline,
+        "intent": intent,
+        "content_type": content_type,
+    }
+    if cove_result is not None:
+        _msg_metadata["verification"] = {
+            "overall_score": cove_result.get("overall_score", 0.0),
+            "summary": cove_result.get("summary", ""),
+            "claim_count": len(cove_result.get("claims", [])),
+            "flagged_count": len(cove_result.get("flagged_claims", [])),
+            "flagged_claims": cove_result.get("flagged_claims", []),
+            "error": cove_result.get("error"),
+        }
+    if citation_check:
+        _msg_metadata["citations"] = {
+            "total": citation_check.get("total_citations", 0),
+            "verified": citation_check.get("verified", 0),
+        }
+    if sources:
+        _msg_metadata["sources"] = sources
+
     # Save assistant response to chat history
     try:
         project_memory.save_message(
-            session_id, project_id, "assistant", full_response, intent
+            session_id, project_id, "assistant", full_response, intent,
+            metadata=_msg_metadata,
         )
     except Exception as e:
         logger.warning(f"Failed to save assistant message: {e}")

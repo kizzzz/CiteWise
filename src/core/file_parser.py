@@ -152,6 +152,15 @@ def _parse_text(filepath: str, filename: str) -> dict:
         lines = raw_text.split('\n')
         buffer = []
 
+        # Extract title from first non-empty line if filename is a hash
+        for line in lines:
+            stripped = line.strip()
+            if stripped:
+                # Use first meaningful line as title if current title looks like a hash
+                if (len(title) >= 20 and title.replace('.', '').isalnum()) or title == '':
+                    title = stripped[:200]
+                break
+
         for line in lines:
             match = md_heading.match(line)
             if match:
