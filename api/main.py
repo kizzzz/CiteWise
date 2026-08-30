@@ -135,6 +135,7 @@ app.add_middleware(
         "http://localhost:3000",
         "https://cite-wise-mu.vercel.app",
         "https://citewise-w9op.onrender.com",
+        "https://citewise-msshk9qg.edgeone.cool",
     ],
     allow_credentials=False,
     allow_methods=["*"],
