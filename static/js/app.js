@@ -628,7 +628,8 @@ async function openDraftEditor(id, name) {
     safeClassAction('draftListView', 'add', 'hidden');
     safeClassAction('draftEditor', 'remove', 'hidden');
     document.getElementById('editorTitle').textContent = name;
-    document.getElementById('subChatWindow').innerHTML = '<div class="sub-bubble sub-bubble-ai">协作模式已激活。输入指令来修改章节内容。</div>';
+    const subWin = document.getElementById('subChatWindow');
+    subWin.innerHTML = '<div class="sub-bubble sub-bubble-ai">协作模式已激活。输入指令来修改章节内容。</div>';
 
     // Load section content
     try {
@@ -638,7 +639,48 @@ async function openDraftEditor(id, name) {
     } catch (e) {
         document.getElementById('editableArea').innerText = '加载失败';
     }
+
+    // Restore collaborative conversation history (persisted server-side).
+    if (id) {
+        try {
+            const histResp = await api('GET', `/sections/${id}/chats`);
+            if (histResp.ok) {
+                const histData = await histResp.json();
+                const msgs = (histData && histData.messages) || [];
+                if (msgs.length > 0) {
+                    subWin.innerHTML = msgs.map(m => {
+                        const cls = m.role === 'user' ? 'sub-bubble-user' : 'sub-bubble-ai';
+                        return `<div class="sub-bubble ${cls}">${escapeHtml(m.content)}</div>`;
+                    }).join('');
+                    setTimeout(() => { subWin.scrollTop = subWin.scrollHeight; }, 50);
+                }
+            }
+        } catch (histErr) {
+            console.warn('Load section chat history failed:', histErr);
+        }
+    }
     lucide.createIcons();
+}
+
+async function clearSectionChats() {
+    if (!currentDraftId) {
+        showToast('未打开任何章节', 'error');
+        return;
+    }
+    if (!confirm('确定清空「' + currentDraftName + '」的全部协作对话？\n（章节内容本身会保留，只清空对话历史，用于上下文隔离）')) return;
+    try {
+        const resp = await api('DELETE', `/sections/${currentDraftId}/chats`);
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        const subWin = document.getElementById('subChatWindow');
+        if (subWin) {
+            subWin.innerHTML = '<div class="sub-bubble sub-bubble-ai">协作模式已激活（已清空历史）。输入指令来修改章节内容。</div>';
+        }
+        showToast(`已清空 ${data.deleted || 0} 条对话`, 'success');
+        lucide.createIcons();
+    } catch (e) {
+        showToast('清空失败: ' + e.message, 'error');
+    }
 }
 
 function closeDraftEditor() {
@@ -669,6 +711,7 @@ async function handleSendSubChat() {
             message: text,
             project_id: currentProjectId,
             section_name: currentDraftName,
+            section_id: currentDraftId || '',
             content: content,
         };
         const activeKey2 = getActiveApiKey();
@@ -680,15 +723,14 @@ async function handleSendSubChat() {
 
         document.getElementById(aiBubbleId).innerHTML = escapeHtml(result.content || '处理完成');
 
-        if (result.type === 'modify' || result.content) {
+        // Only update the editor area when the backend actually rewrote the
+        // section (intent === 'modify'). Q&A / discussion replies (intent ===
+        // 'chat') must NOT overwrite the user's draft.
+        if (result.intent === 'modify' && result.content && result.type !== 'error') {
             document.getElementById('editableArea').innerText = result.content;
             // Save back
             if (currentDraftId) {
                 await api('PUT', `/sections/${currentDraftId}`, { content: result.content });
-            } else if (currentDraftName && currentProjectId) {
-                // Fallback: save by section name via coordinator
-                const content = result.content;
-                document.getElementById('editableArea').innerText = content;
             }
         }
     } catch (e) {
@@ -1441,9 +1483,19 @@ async function loadRecommendations() {
     error.classList.add('hidden');
     grid.classList.add('hidden');
 
+    // Friendly "still working" hint — backend has a 12s hard timeout, so if
+    // we're still waiting after 4s, tell the user instead of looking frozen.
+    const slowTimer = setTimeout(() => {
+        if (!loading.classList.contains('hidden')) {
+            loading.textContent = '正在聚合多源推荐，请稍候...';
+        }
+    }, 4000);
+
     try {
         const resp = await api('GET', `/recommendations?project_id=${currentProjectId}&top_k=5`);
         const data = await resp.json();
+        clearTimeout(slowTimer);
+        loading.textContent = '加载中...';
         loading.classList.add('hidden');
 
         if (!data.recommendations || data.recommendations.length === 0) {
@@ -1453,6 +1505,8 @@ async function loadRecommendations() {
 
         renderRecommendations(data.recommendations);
     } catch (e) {
+        clearTimeout(slowTimer);
+        loading.textContent = '加载中...';
         loading.classList.add('hidden');
         error.classList.remove('hidden');
         document.getElementById('recommendErrorMsg').textContent = '加载失败: ' + e.message;
@@ -1474,19 +1528,56 @@ function renderRecommendations(recs) {
                            scorePercent >= 40 ? 'text-amber-600 bg-amber-50' :
                            'text-slate-500 bg-slate-50';
 
+        // Source type detection:
+        //   external_url present      → external web resource (click opens URL)
+        //   recommended_paper_id starts with 'paper_'  → local uploaded paper
+        const isExternal = !!rec.external_url;
+        const isLocal = !isExternal
+            && typeof rec.recommended_paper_id === 'string'
+            && rec.recommended_paper_id.startsWith('paper_');
+        const sourceBadge = isExternal
+            ? '<span class="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded bg-blue-50 text-blue-600"><i data-lucide="globe" class="w-3 h-3"></i>外部</span>'
+            : isLocal
+                ? '<span class="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-50 text-emerald-700"><i data-lucide="file-text" class="w-3 h-3"></i>本地文献</span>'
+                : '<span class="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-500"><i data-lucide="book" class="w-3 h-3"></i>相关</span>';
+
+        // Click behaviour: external → open URL; local → open paper detail;
+        // neither → no click (just display).
         const card = document.createElement('div');
-        card.className = 'interactive-card bg-white border border-slate-100 rounded-2xl shadow-sm hover:shadow-md transition-all p-5 space-y-3 cursor-default';
+        const clickable = isExternal || isLocal;
+        card.className = `interactive-card bg-white border border-slate-100 rounded-2xl shadow-sm hover:shadow-md transition-all p-5 space-y-3 ${clickable ? 'cursor-pointer hover:border-indigo-200 hover:bg-indigo-50/30' : 'cursor-default'}`;
+        if (isExternal) {
+            const url = rec.external_url;
+            card.onclick = (ev) => {
+                ev.preventDefault();
+                window.open(url, '_blank', 'noopener');
+            };
+        } else if (isLocal) {
+            const pid = rec.recommended_paper_id;
+            const ptitle = rec.recommended_paper_title || '';
+            card.onclick = (ev) => {
+                ev.preventDefault();
+                openPaperDetail(pid, ptitle, '');
+            };
+        }
+
         card.innerHTML = `
             <div class="flex items-start justify-between gap-2">
                 <h4 class="font-bold text-slate-800 text-sm leading-snug line-clamp-2 flex-1">${escapeHtml(rec.recommended_paper_title || '未知标题')}</h4>
                 <span class="shrink-0 text-[10px] font-bold px-2 py-1 rounded-lg ${scoreColor}">${scorePercent}%</span>
             </div>
-            <div class="flex items-center gap-2 text-[11px] text-slate-400">
+            <div class="flex items-center gap-2 flex-wrap text-[11px] text-slate-400">
+                ${sourceBadge}
                 ${rec.recommended_paper_authors ? `<span class="truncate">${escapeHtml(rec.recommended_paper_authors)}</span>` : ''}
                 ${rec.recommended_paper_year ? `<span>· ${escapeHtml(String(rec.recommended_paper_year))}</span>` : ''}
             </div>
             <p class="text-[11px] text-slate-500 leading-relaxed">${escapeHtml(rec.recommendation_reason || '')}</p>
-            ${rec.external_url ? `<a href="${escapeAttr(rec.external_url)}" target="_blank" class="inline-flex items-center gap-1 text-[10px] text-indigo-600 hover:underline"><i data-lucide="external-link" class="w-3 h-3"></i> 查看原文</a>` : ''}
+            ${isExternal
+                ? `<div class="inline-flex items-center gap-1 text-[10px] text-indigo-600"><i data-lucide="external-link" class="w-3 h-3"></i> 点击卡片打开网页</div>`
+                : isLocal
+                    ? `<div class="inline-flex items-center gap-1 text-[10px] text-emerald-600"><i data-lucide="book-open" class="w-3 h-3"></i> 点击卡片打开文献详情</div>`
+                    : ''
+            }
             <div class="pt-1 border-t border-slate-50">
                 <span class="text-[10px] text-slate-300">${rec.source_paper_title ? '源自: ' + escapeHtml(truncate(rec.source_paper_title, 30)) : '外部文献推荐'}</span>
             </div>

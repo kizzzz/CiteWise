@@ -88,20 +88,50 @@ class EmbeddingManager:
         return results
 
     def _call_api(self, texts: list[str]) -> list[list[float]]:
-        """调用 embedding API"""
+        """调用 embedding API
+
+        Zhipu's embedding-3 endpoint rejects batches > 64 inputs with
+        ``input数组最大不得超过64条``. The semantic chunker can easily pass
+        100+ sentences in one go, so we slice into <=48-item sub-batches
+        (safety margin under the 64 limit) and concatenate results in order.
+        """
         import time
-        for attempt in range(3):
-            try:
-                resp = self.client.embeddings.create(
-                    model=self.model,
-                    input=texts,
+        if not texts:
+            return []
+
+        BATCH = 48  # Zhipu hard limit is 64; leave headroom for future bumps.
+        all_vectors: list[list[float]] = []
+        for start in range(0, len(texts), BATCH):
+            chunk_texts = texts[start:start + BATCH]
+            success = False
+            for attempt in range(3):
+                try:
+                    resp = self.client.embeddings.create(
+                        model=self.model,
+                        input=chunk_texts,
+                    )
+                    vectors = [item.embedding for item in resp.data]
+                    if len(vectors) != len(chunk_texts):
+                        raise RuntimeError(
+                            f"batch returned {len(vectors)} vectors for {len(chunk_texts)} inputs"
+                        )
+                    all_vectors.extend(vectors)
+                    success = True
+                    break
+                except Exception as e:
+                    logger.error(
+                        f"Embedding 生成失败 (batch {start//BATCH + 1}, "
+                        f"attempt {attempt+1}/3): {e}"
+                    )
+                    if attempt < 2:
+                        time.sleep(1 * (attempt + 1))
+            if not success:
+                # Propagate failure so the caller can fall back (e.g. semantic
+                # chunker degrades to rule-based chunking).
+                raise RuntimeError(
+                    f"Embedding batch {start//BATCH + 1} failed after 3 attempts"
                 )
-                return [item.embedding for item in resp.data]
-            except Exception as e:
-                logger.error(f"Embedding 生成失败 (attempt {attempt+1}/3): {e}")
-                if attempt < 2:
-                    time.sleep(1 * (attempt + 1))
-        return []
+        return all_vectors
 
 
 class VectorStore:
@@ -212,29 +242,39 @@ class VectorStore:
                 })
         return output
 
-    def get_chunks_by_paper(self, paper_id: str) -> list[dict]:
-        """获取某篇论文的所有 chunks（按 section_level 和 section_title 排序）"""
+    def get_chunks_by_paper(self, paper_id: str, include_embedding: bool = False) -> list[dict]:
+        """获取某篇论文的所有 chunks（按 section_level 和 section_title 排序）
+
+        Performance: 默认 ``include_embedding=False``，不拉取向量数据 —— 详情
+        页只需要文本，没必要把成百上千个 1024 维向量也拉回来。
+        """
+        include_fields = ["documents", "metadatas"]
+        if include_embedding:
+            include_fields.append("embeddings")
         try:
             results = self.paper_collection.get(
                 where={"paper_id": paper_id},
-                include=["documents", "metadatas", "embeddings"],
+                include=include_fields,
             )
         except Exception as e:
             logger.error(f"获取论文 chunks 失败: {e}")
             return []
 
         output = []
+        embeddings = results.get("embeddings") if include_embedding else None
         if results["ids"]:
             for i in range(len(results["ids"])):
                 meta = results["metadatas"][i] if results["metadatas"] else {}
-                output.append({
+                item = {
                     "chunk_id": results["ids"][i],
                     "text": results["documents"][i],
-                    "embedding": results["embeddings"][i] if results.get("embeddings") is not None else [],
                     "section_title": meta.get("section_title", ""),
                     "section_level": meta.get("section_level", "L2"),
                     "has_table": meta.get("has_table", False),
-                })
+                }
+                if include_embedding:
+                    item["embedding"] = embeddings[i] if embeddings is not None else []
+                output.append(item)
         # Sort: L0 first (abstract), then L1, then L2
         level_order = {"L0": 0, "L1": 1, "L2": 2}
         output.sort(key=lambda c: level_order.get(c["section_level"], 2))

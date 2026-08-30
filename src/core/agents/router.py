@@ -25,17 +25,19 @@ _PRIORITY_INTENTS = {"export", "websearch", "modify"}
 # All valid intents for LLM classification
 ALL_INTENTS = list(INTENT_MAP.keys()) + ["explore"]
 
-# Tiered model routing: map intent to model
+# Tiered model routing: map intent to model.
+# Heavy-duty writing tasks (generate / modify / framework / chart) use glm-4.7
+# for stronger Chinese academic output; lightweight intents stay on glm-4-flash.
 MODEL_ROUTING_MAP = {
     "explore": "glm-4-flash",
     "summarize": "glm-4-flash",
     "websearch": "glm-4-flash",
     "figures": "glm-4-flash",
     "analyze": "glm-4-flash",
-    "generate": "glm-4.5",
-    "modify": "glm-4.5",
-    "framework": "glm-4.5",
-    "chart": "glm-4.5",
+    "generate": "glm-4.7",
+    "modify": "glm-4.7",
+    "framework": "glm-4.7",
+    "chart": "glm-4.7",
     "export": "glm-4-flash",
 }
 

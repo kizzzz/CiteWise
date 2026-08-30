@@ -223,6 +223,29 @@ class ProjectMemory:
                     created_at TEXT DEFAULT (datetime('now'))
                 );
                 CREATE INDEX IF NOT EXISTS idx_note_types_project ON note_types(project_id);
+
+                CREATE TABLE IF NOT EXISTS section_chats (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    section_id TEXT NOT NULL,
+                    section_name TEXT DEFAULT '',
+                    role TEXT NOT NULL DEFAULT 'user',
+                    content TEXT NOT NULL DEFAULT '',
+                    intent TEXT DEFAULT '',
+                    created_at TEXT DEFAULT (datetime('now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_section_chats_sid ON section_chats(section_id);
+                CREATE INDEX IF NOT EXISTS idx_section_chats_pid ON section_chats(project_id);
+
+                CREATE TABLE IF NOT EXISTS llm_cache (
+                    cache_key TEXT PRIMARY KEY,
+                    project_id TEXT DEFAULT '',
+                    category TEXT DEFAULT '',
+                    value_json TEXT NOT NULL,
+                    created_at TEXT DEFAULT (datetime('now'))
+                );
+                CREATE INDEX IF NOT EXISTS idx_llm_cache_pid ON llm_cache(project_id);
+                CREATE INDEX IF NOT EXISTS idx_llm_cache_cat ON llm_cache(category);
             """)
             # Migration: add columns if they don't exist (SQLite ALTER TABLE)
             try:
@@ -259,6 +282,14 @@ class ProjectMemory:
                 pass
             try:
                 conn.execute("ALTER TABLE chat_messages ADD COLUMN metadata TEXT DEFAULT '{}'")
+            except Exception:
+                pass
+            try:
+                conn.execute("ALTER TABLE papers ADD COLUMN avg_embedding TEXT DEFAULT ''")
+            except Exception:
+                pass
+            try:
+                conn.execute("ALTER TABLE papers ADD COLUMN embedding_updated_at TEXT DEFAULT ''")
             except Exception:
                 pass
             conn.commit()
@@ -418,6 +449,7 @@ class ProjectMemory:
     def delete_section(self, section_id: str):
         with self._get_conn() as conn:
             conn.execute("DELETE FROM generated_sections WHERE id=?", (section_id,))
+            conn.execute("DELETE FROM section_chats WHERE section_id=?", (section_id,))
             conn.commit()
 
     def get_unique_sections(self, project_id: str) -> list[dict]:
@@ -817,6 +849,119 @@ class ProjectMemory:
                 msg["metadata"] = {}
             messages.append(msg)
         return messages
+
+    # --- 章节协作面板对话（section_chats）---
+    def save_section_chat(self, project_id: str, section_id: str,
+                          role: str, content: str,
+                          section_name: str = "", intent: str = "") -> str:
+        """持久化协作面板的一条消息（user / assistant）。"""
+        cid = f"sch_{uuid.uuid4().hex[:10]}"
+        with self._get_conn() as conn:
+            conn.execute(
+                "INSERT INTO section_chats (id, project_id, section_id, section_name, role, content, intent) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (cid, project_id, section_id, section_name, role, content, intent)
+            )
+            conn.commit()
+        return cid
+
+    def list_section_chats(self, section_id: str, limit: int = 200) -> list[dict]:
+        """按时间正序返回某章节的协作面板历史。
+
+        Uses rowid (monotonic insert order) rather than created_at because the
+        latter has only second-level resolution — rapid back-to-back messages
+        would otherwise tie and sort non-deterministically.
+        """
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT role, content, intent, section_name, created_at FROM section_chats "
+                "WHERE section_id=? ORDER BY rowid DESC LIMIT ?",
+                (section_id, limit)
+            ).fetchall()
+        return [
+            {
+                "role": r["role"],
+                "content": r["content"],
+                "intent": r["intent"],
+                "section_name": r["section_name"],
+                "created_at": r["created_at"],
+            }
+            for r in reversed(rows)
+        ]
+
+    def delete_section_chats(self, section_id: str) -> int:
+        """删除某章节的全部对话（章节被删除时调用）。"""
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "DELETE FROM section_chats WHERE section_id=?", (section_id,)
+            )
+            conn.commit()
+            return cur.rowcount
+
+    # --- 论文级平均向量缓存（avg_embedding）---
+    def save_paper_embedding(self, paper_id: str, embedding: list[float]) -> None:
+        """缓存 paper-level 平均向量（JSON 字符串）。"""
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE papers SET avg_embedding=?, embedding_updated_at=datetime('now') WHERE id=?",
+                (json.dumps(embedding, ensure_ascii=False), paper_id)
+            )
+            conn.commit()
+
+    def get_paper_embedding_cached(self, paper_id: str) -> Optional[list[float]]:
+        """读取缓存的 paper 平均向量，无则返回 None。"""
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT avg_embedding FROM papers WHERE id=?", (paper_id,)
+            ).fetchone()
+        if not row:
+            return None
+        raw = row["avg_embedding"] if row["avg_embedding"] else ""
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw)
+            if isinstance(data, list) and data:
+                return data
+        except (json.JSONDecodeError, TypeError):
+            return None
+        return None
+
+    # --- LLM 结果缓存（持久化到 SQLite，重启不丢）---
+    def cache_get(self, category: str, cache_key: str) -> Optional[object]:
+        """Read a cached JSON value. Returns None on miss."""
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT value_json FROM llm_cache WHERE cache_key=?",
+                (cache_key,),
+            ).fetchone()
+        if not row:
+            return None
+        try:
+            return json.loads(row["value_json"])
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+    def cache_set(self, category: str, cache_key: str, value, project_id: str = "") -> None:
+        """Persist a JSON-serialisable value under (category, cache_key)."""
+        payload = json.dumps(value, ensure_ascii=False)
+        with self._get_conn() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO llm_cache (cache_key, project_id, category, value_json) "
+                "VALUES (?, ?, ?, ?)",
+                (cache_key, project_id, category, payload),
+            )
+            conn.commit()
+
+    def cache_delete_category(self, project_id: str, category: str) -> int:
+        """Invalidate all cached entries of a category for a project."""
+        with self._get_conn() as conn:
+            cur = conn.execute(
+                "DELETE FROM llm_cache WHERE project_id=? AND category=?",
+                (project_id, category),
+            )
+            conn.commit()
+            return cur.rowcount
 
 
 class WorkingMemory:

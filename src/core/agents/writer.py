@@ -111,12 +111,24 @@ class WriterAgent(BaseAgent):
 
     def modify_content(self, instruction: str, target_content: str,
                        research_result: dict, project_id: str) -> dict:
-        """修改已有内容"""
+        """修改已有内容
+
+        Robustness: the original implementation assumed the LLM always returns
+        strict JSON with a ``modified_paragraph`` key. When the user's message
+        is a question / discussion rather than a literal edit instruction, the
+        LLM often replies with plain prose — JSON parsing then fails and the
+        caller falls back to ``target_content`` (the original section), which
+        made it look like the agent "didn't reply" in the collaboration panel.
+
+        Fix: try JSON first, but on failure reuse the raw LLM text as the
+        assistant reply so the user always sees a real response.
+        """
         self.reset()
         self._ensure_deps()
         self.think(f"修改指令: {instruction[:50]}")
 
         from src.core.prompt import prompt_engine, SYSTEM_PROMPT_BASE
+        from src.core.llm import LLMError
 
         chunks = research_result.get("chunks", [])
         reference = research_result.get("rag_content", "")
@@ -133,13 +145,50 @@ class WriterAgent(BaseAgent):
             {"role": "user", "content": task_prompt},
         ]
 
-        result = self._llm.chat_json(messages, temperature=0.5)
-        self.think("修改完成")
+        # Path A — preferred: strict JSON with modified_paragraph.
+        try:
+            result = self._llm.chat_json(messages, temperature=0.5)
+            modified = (result or {}).get("modified_paragraph", "").strip()
+            if modified:
+                self.think("修改完成")
+                return {
+                    "type": "modify",
+                    "content": modified,
+                    "change_summary": (result or {}).get("change_summary", "已修改"),
+                    "intent": "modify",
+                    "thinking_steps": self.thinking_steps,
+                }
+            # JSON returned but without the expected key — fall through to
+            # Path B so we still surface *something*.
+            logger.warning("modify_content: JSON ok but missing modified_paragraph")
+        except LLMError as e:
+            logger.warning(f"modify_content chat_json failed, falling back to plain chat: {e}")
 
+        # Path B — fallback: ask the LLM directly for the reply as plain text.
+        # The user prompt is rewritten to make clear either an edit OR a
+        # conversational answer is acceptable.
+        plain_prompt = (
+            f"用户正在撰写论文的章节，当前内容如下：\n{target_content[:3000]}\n\n"
+            f"用户指令/问题：{instruction}\n\n"
+            f"请根据用户指令直接输出修改后的完整章节内容；"
+            f"如果用户是在提问或讨论而非要求修改，请用中文正常回答。"
+            f"不要输出 JSON、不要解释，直接给出最终文本。"
+        )
+        plain_messages = [
+            {"role": "system", "content": SYSTEM_PROMPT_BASE},
+            {"role": "user", "content": plain_prompt},
+        ]
+        try:
+            text = self._llm.chat(plain_messages, temperature=0.5)
+        except LLMError as e:
+            logger.error(f"modify_content fallback chat also failed: {e}")
+            text = ""
+
+        self.think("修改完成（纯文本兜底）")
         return {
             "type": "modify",
-            "content": result.get("modified_paragraph", target_content),
-            "change_summary": result.get("change_summary", "已修改"),
+            "content": (text or "").strip(),
+            "change_summary": "纯文本回复",
             "intent": "modify",
             "thinking_steps": self.thinking_steps,
         }

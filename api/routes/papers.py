@@ -1,5 +1,6 @@
 """论文管理路由"""
 import os
+import re
 import uuid
 import json
 import asyncio
@@ -135,6 +136,20 @@ async def upload_papers_stream(files: list[UploadFile] = File(...), project_id: 
             await asyncio.to_thread(bm25_index.add_chunks, all_chunks)
             await asyncio.to_thread(bm25_index.save)
 
+        # Invalidate recommender / knowledge-map caches for this project so
+        # newly indexed papers show up immediately, then pre-warm paper-level
+        # embeddings in the background so the first knowledge-map / recommend
+        # request isn't slow.
+        try:
+            from src.core.recommender import invalidate_project_cache
+            invalidate_project_cache(project_id)
+        except Exception:
+            pass
+        try:
+            asyncio.create_task(_precompute_paper_embeddings(project_id))
+        except Exception:
+            pass
+
         yield {"event": "done", "data": json.dumps({
             "message": f"已入库 {processed} 篇论文，{len(all_chunks)} 个片段" +
                        (f"，{fig_count} 张图表" if fig_count else ""),
@@ -143,6 +158,23 @@ async def upload_papers_stream(files: list[UploadFile] = File(...), project_id: 
         }, ensure_ascii=False)}
 
     return EventSourceResponse(progress_generator())
+
+
+async def _precompute_paper_embeddings(project_id: str) -> None:
+    """Background task: warm paper-level embedding cache after upload.
+
+    Runs after upload completes so the user doesn't pay the ChromaDB round-trip
+    on the first knowledge-map / recommendations call. Failures are swallowed
+    because this is strictly an optimization — cached entries are recomputed
+    lazily on demand.
+    """
+    try:
+        from src.core.recommender import get_paper_embeddings, invalidate_project_cache
+        # Force refresh here so we recompute for the newly-added papers.
+        get_paper_embeddings(project_id, force_refresh=True)
+        invalidate_project_cache(project_id)
+    except Exception as e:
+        logger.warning(f"Pre-compute paper embeddings failed: {e}")
 
 
 async def _process_uploads(files: list[UploadFile], project_id: str) -> dict:
@@ -210,6 +242,16 @@ async def _process_uploads(files: list[UploadFile], project_id: str) -> dict:
         await asyncio.to_thread(bm25_index.add_chunks, all_chunks)
         await asyncio.to_thread(bm25_index.save)
 
+    try:
+        from src.core.recommender import invalidate_project_cache
+        invalidate_project_cache(project_id)
+    except Exception:
+        pass
+    try:
+        asyncio.create_task(_precompute_paper_embeddings(project_id))
+    except Exception:
+        pass
+
     return {
         "message": f"已入库 {processed} 篇论文，{len(all_chunks)} 个片段" +
                    (f"，{fig_count} 张图表" if fig_count else ""),
@@ -245,6 +287,12 @@ async def delete_paper(paper_id: str, project_id: str = "", user: dict = Depends
         bm25_index.bm25 = None
     await asyncio.to_thread(bm25_index.save)
 
+    try:
+        from src.core.recommender import invalidate_project_cache
+        invalidate_project_cache(project_id)
+    except Exception:
+        pass
+
     return {"status": "ok", "paper_id": paper_id}
 
 
@@ -260,14 +308,15 @@ async def get_paper_detail(paper_id: str, user: dict = Depends(require_auth)):
     paper = dict(row)
 
     # Strategy 1: Read from SQLite raw_text / sections_json (persisted at upload time)
-    raw_text = paper.get("raw_text", "")
-    sections_json_str = paper.get("sections_json", "[]")
+    raw_text = paper.get("raw_text", "") or ""
+    sections_json_str = paper.get("sections_json", "[]") or ""
     sections = []
     try:
         sections = json.loads(sections_json_str) if sections_json_str else []
     except (json.JSONDecodeError, TypeError):
         sections = []
 
+    # Fast path: anything usable in SQLite is returned immediately (ms-level latency).
     if sections and any(s.get("text", "").strip() for s in sections):
         paper["abstract"] = ""
         paper["sections"] = [
@@ -281,11 +330,28 @@ async def get_paper_detail(paper_id: str, user: dict = Depends(require_auth)):
         paper["full_text"] = raw_text or "\n\n".join(
             s.get("text", "") for s in sections
         )
+        # Strip heavy fields the front-end doesn't need in the detail view.
+        paper.pop("raw_text", None)
+        paper.pop("sections_json", None)
+        paper.pop("avg_embedding", None)
         return paper
 
-    # Strategy 2: Fallback to ChromaDB chunks
+    # If raw_text is rich enough, segment it cheaply in-memory and return fast —
+    # avoids the expensive ChromaDB round-trip that was causing "加载中" to hang.
+    if len(raw_text) > 200:
+        paper["sections"] = _segment_raw_text(raw_text)
+        paper["abstract"] = paper["sections"][0]["text"][:500] if paper["sections"] else ""
+        paper["full_text"] = raw_text
+        paper.pop("raw_text", None)
+        paper.pop("sections_json", None)
+        paper.pop("avg_embedding", None)
+        return paper
+
+    # Strategy 2: Fallback to ChromaDB chunks (no embeddings — text only).
     try:
-        chunks = await asyncio.to_thread(vector_store.get_chunks_by_paper, paper_id)
+        chunks = await asyncio.to_thread(
+            lambda: vector_store.get_chunks_by_paper(paper_id, include_embedding=False)
+        )
         if chunks:
             grouped = []
             current_section = None
@@ -316,7 +382,69 @@ async def get_paper_detail(paper_id: str, user: dict = Depends(require_auth)):
         paper["sections"] = []
         paper["full_text"] = raw_text or ""
 
+    paper.pop("raw_text", None)
+    paper.pop("sections_json", None)
+    paper.pop("avg_embedding", None)
     return paper
+
+
+def _segment_raw_text(raw_text: str) -> list[dict]:
+    """Cheap in-memory segmentation of raw paper text.
+
+    Avoids the ChromaDB round-trip when SQLite already has a usable raw_text
+    but no structured sections_json. Splits on common section headings + double
+    newlines. Returns ``[{title, level, text}, ...]``.
+    """
+    if not raw_text:
+        return []
+    heading_re = re.compile(
+        r"(?m)^\s*(?:"
+        r"(?:Abstract|Introduction|Background|Related\s+Work|Methods?|Materials?[^.\n]*|"
+        r"Results?|Discussion|Conclusions?|References?|Acknowledg(?:e)?ments?|附录|摘要|"
+        r"引言|前言|背景|相关工作|方法|实验|结果|讨论|结论|参考文献|致谢)"
+        r"[^\n]{0,80})"
+        r"\s*$"
+    )
+    sections: list[dict] = []
+    current_title = "全文"
+    current_level = "L1"
+    buf: list[str] = []
+
+    def flush():
+        nonlocal buf
+        if buf:
+            text = "\n".join(buf).strip()
+            if text:
+                sections.append({
+                    "title": current_title,
+                    "level": current_level,
+                    "text": text,
+                })
+            buf = []
+
+    for line in raw_text.splitlines():
+        if heading_re.match(line):
+            flush()
+            current_title = line.strip()[:120] or "章节"
+            current_level = "L1"
+        else:
+            buf.append(line)
+    flush()
+
+    if not sections:
+        # Fallback: split by blank lines into ~3000-char chunks so the UI has
+        # multiple cards instead of one giant wall of text.
+        paragraphs = [p.strip() for p in re.split(r"\n{2,}", raw_text) if p.strip()]
+        chunk_size = 3000
+        text_acc = ""
+        for p in paragraphs:
+            if len(text_acc) + len(p) > chunk_size and text_acc:
+                sections.append({"title": "全文", "level": "L2", "text": text_acc})
+                text_acc = ""
+            text_acc = (text_acc + "\n\n" + p).strip() if text_acc else p
+        if text_acc:
+            sections.append({"title": "全文", "level": "L2", "text": text_acc})
+    return sections
 
 
 class PaperTitleUpdate(BaseModel):

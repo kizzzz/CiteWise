@@ -25,6 +25,36 @@ async def list_sections(project_id: str, user: dict = Depends(require_auth)):
     return project_memory.get_unique_sections(project_id)
 
 
+@router.get("/sections/{section_id}/chats")
+async def get_section_chats(section_id: str, user: dict = Depends(require_auth)):
+    """读取章节协作面板的历史对话（持久化）"""
+    if not SECTION_ID_PATTERN.match(section_id):
+        raise HTTPException(status_code=400, detail="Invalid section ID format")
+    from src.core.memory import project_memory
+    section = project_memory.get_section_by_id(section_id)
+    if not section:
+        raise HTTPException(status_code=404, detail="Section not found")
+    verify_project_owner(section["project_id"], user["user_id"])
+    return {"messages": project_memory.list_section_chats(section_id)}
+
+
+@router.delete("/sections/{section_id}/chats")
+async def clear_section_chats(section_id: str, user: dict = Depends(require_auth)):
+    """清空某章节协作面板的全部历史对话（用于「新对话」上下文隔离）。
+
+    注意：不会删除章节内容本身，只清空对话。
+    """
+    if not SECTION_ID_PATTERN.match(section_id):
+        raise HTTPException(status_code=400, detail="Invalid section ID format")
+    from src.core.memory import project_memory
+    section = project_memory.get_section_by_id(section_id)
+    if not section:
+        raise HTTPException(status_code=404, detail="Section not found")
+    verify_project_owner(section["project_id"], user["user_id"])
+    deleted = project_memory.delete_section_chats(section_id)
+    return {"status": "ok", "deleted": deleted}
+
+
 @router.post("/sections")
 async def create_section(req: SectionCreate, user: dict = Depends(require_auth)):
     verify_project_owner(req.project_id, user["user_id"])

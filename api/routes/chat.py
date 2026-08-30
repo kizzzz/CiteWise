@@ -53,7 +53,17 @@ async def chat_endpoint(req: ChatRequest, user: dict = Depends(require_auth)):
 
 @router.post("/chat/sub")
 async def sub_chat_endpoint(req: SubChatRequest, user: dict = Depends(require_auth)):
-    """子对话 — 章节级编辑（使用旧 coordinator 保持兼容）"""
+    """子对话 — 章节协作面板
+
+    Intent routing:
+      * modify  — message 含「修改/改写/续写/扩展/精简/替换/删/加」等动词 → 调
+        coordinator with intent=modify → 返回修改后的完整章节，前端更新编辑区。
+      * chat    — 其他（提问、讨论、确认）→ 直接调 LLM 基于章节上下文回答，
+        **不**触发改章节动作。前端只追加 AI 回复，保持章节内容不变。
+
+    Both paths persist user + assistant messages into section_chats so reload
+    never loses the conversation.
+    """
     if not req.message or not req.message.strip():
         raise HTTPException(status_code=422, detail="Message must not be empty")
     if len(req.message) > MAX_MESSAGE_LENGTH:
@@ -63,52 +73,79 @@ async def sub_chat_endpoint(req: SubChatRequest, user: dict = Depends(require_au
     verify_project_owner(req.project_id, user["user_id"])
     start_time = time.time()
     try:
-        from src.core.agents.coordinator import coordinator
+        from src.core.llm import llm_client, LLMError
+        from src.core.memory import project_memory
+        from src.core.prompt import SYSTEM_PROMPT_BASE
 
-        augmented_prompt = (
-            f"用户正在撰写论文的「{req.section_name}」章节。\n\n"
-            f"当前章节内容：\n{req.content[:3000]}\n\n"
-            f"用户最新指令：{req.message}\n\n"
-            f"请根据用户指令对「{req.section_name}」章节进行操作。直接输出修改后的内容或回答。"
-        )
+        # Resolve section_id so we can persist the conversation alongside the section.
+        section_id = getattr(req, "section_id", "") or ""
+        if not section_id:
+            for s in project_memory.get_unique_sections(req.project_id):
+                if s.get("section_name") == req.section_name:
+                    section_id = s.get("id", "")
+                    break
 
-        result = await asyncio.to_thread(
-            coordinator.process,
-            augmented_prompt, req.project_id,
-            intent="modify",
-            target_content=req.content,
-            api_key=req.api_key or None,
-            base_url=req.base_url or None,
-        )
+        # Persist the user side BEFORE the LLM call so the message survives
+        # any timeout / crash.
+        if section_id:
+            try:
+                project_memory.save_section_chat(
+                    req.project_id, section_id,
+                    role="user", content=req.message,
+                    section_name=req.section_name, intent="pending",
+                )
+            except Exception as e:
+                logger.warning(f"save_section_chat(user) failed: {e}")
 
-        content = result.get("content", "")
-        rtype = result.get("type", "text")
+        # --- Intent detection -------------------------------------------------
+        intent = _detect_sub_intent(req.message)
 
-        if content and rtype != "error":
-            from src.core.memory import project_memory
-            project_memory.save_section(req.project_id, req.section_name, content)
+        if intent == "modify":
+            content, rtype = await asyncio.to_thread(
+                _run_modify_path,
+                req.message, req.content, req.section_name,
+                req.project_id, req.api_key, req.base_url,
+            )
+            # Persist the modified section content.
+            if content and rtype != "error":
+                try:
+                    project_memory.save_section(req.project_id, req.section_name, content)
+                except Exception as e:
+                    logger.warning(f"save_section(modify) failed: {e}")
+        else:
+            # Q&A / discussion path — pure LLM chat with section as context.
+            content, rtype = await asyncio.to_thread(
+                _run_chat_path,
+                req.message, req.content, req.section_name,
+                req.api_key, req.base_url,
+            )
 
-        # Record eval
+        # Persist assistant reply (always, even on failure).
+        if section_id:
+            reply_to_save = content if content else "（Agent 处理失败，请重试或调整指令）"
+            try:
+                project_memory.save_section_chat(
+                    req.project_id, section_id,
+                    role="assistant", content=reply_to_save,
+                    section_name=req.section_name,
+                    intent=("error" if not content else rtype),
+                )
+            except Exception as e:
+                logger.warning(f"save_section_chat(assistant) failed: {e}")
+
+        # Eval record (best-effort).
         try:
-            citation_check = result.get("citations") or {}
-            _citation_accuracy = citation_check.get("verification_rate", 0.0) if citation_check else 0.0
-            _eval_meta = {}
-            if citation_check:
-                _eval_meta["citations"] = {
-                    "total": citation_check.get("total_citations", 0),
-                    "verified": citation_check.get("verified", 0),
-                }
             record_eval(
                 session_id=f"s_{req.project_id}_{int(time.time())}",
                 project_id=req.project_id,
-                intent="modify",
+                intent=intent,
                 task_type=rtype or "text",
-                success=rtype != "error",
+                success=bool(content) and rtype != "error",
                 response_time_ms=int((time.time() - start_time) * 1000),
-                has_citations=bool(citation_check),
-                citation_accuracy=round(_citation_accuracy, 4),
+                has_citations=False,
+                citation_accuracy=0.0,
                 llm_model="glm-4.7",
-                metadata=_eval_meta if _eval_meta else None,
+                metadata=None,
             )
         except Exception as e:
             logger.warning(f"Sub-chat eval record failed: {e}")
@@ -116,12 +153,123 @@ async def sub_chat_endpoint(req: SubChatRequest, user: dict = Depends(require_au
         return {
             "content": content,
             "type": rtype,
-            "sources": result.get("sources"),
-            "citations": result.get("citations"),
+            "intent": intent,
+            "section_id": section_id,
         }
     except Exception as e:
         logger.error(f"Sub-chat error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="处理出错，请稍后重试")
+
+
+# Keywords that signal the user wants the section actually rewritten.
+# Keep order‑agnostic and Chinese‑friendly; adding English synonyms is safe.
+_MODIFY_KEYWORDS = (
+    "修改", "改写", "重写", "续写", "扩展", "精简", "精炼", "替换",
+    "删掉", "删除", "去掉", "添加", "加入", "补充", "调整", "改成",
+    "转换为", "翻译", "润色", "改一下", "修改一下", "请改",
+)
+
+
+def _detect_sub_intent(message: str) -> str:
+    """Heuristic: return 'modify' if the message clearly asks to edit the
+    section, otherwise 'chat' (Q&A / discussion / confirmation).
+
+    Why heuristic over LLM classification: this runs on every sub-chat message
+    and needs to be fast + deterministic. Misrouting a rare ambiguous case is
+    recoverable (user just re-phrases); adding another LLM round-trip here
+    would noticeably slow the panel.
+    """
+    msg = (message or "").strip()
+    if not msg:
+        return "chat"
+    if any(kw in msg for kw in _MODIFY_KEYWORDS):
+        return "modify"
+    return "chat"
+
+
+def _run_modify_path(message: str, content: str, section_name: str,
+                     project_id: str, api_key: str, base_url: str) -> tuple[str, str]:
+    """Synchronous helper executed in a worker thread.
+
+    Uses the LangGraph coordinator with intent=modify so the Writer agent
+    rewrites the section. Returns (content, type).
+    """
+    from src.core.agents.coordinator import coordinator
+
+    augmented_prompt = (
+        f"用户正在撰写论文的「{section_name}」章节。\n\n"
+        f"当前章节内容：\n{content[:3000]}\n\n"
+        f"用户修改指令：{message}\n\n"
+        f"请严格按用户指令修改「{section_name}」章节，直接输出修改后的完整章节内容。"
+    )
+    try:
+        result = coordinator.process(
+            augmented_prompt, project_id,
+            intent="modify",
+            target_content=content,
+            api_key=api_key or None,
+            base_url=base_url or None,
+        )
+    except Exception as e:
+        logger.error(f"coordinator.process(modify) failed: {e}", exc_info=True)
+        return "", "error"
+
+    return result.get("content", ""), result.get("type", "modify")
+
+
+def _run_chat_path(message: str, content: str, section_name: str,
+                   api_key: str, base_url: str) -> tuple[str, str]:
+    """Synchronous helper: answer a Q&A / discussion message WITHOUT touching
+    the section content.
+
+    Prompt strategy:
+      - System: CiteWise assistant, answer in Chinese, be concise.
+      - User: current section (as read-only context) + the user's question.
+
+    The LLM's reply is returned verbatim as the assistant bubble. Section
+    content is never modified by this path.
+    """
+    from src.core.llm import llm_client, LLMError
+
+    # Apply API key override if the user provided one (same pattern as main chat).
+    override_applied = False
+    if api_key:
+        try:
+            llm_client.set_override(api_key, base_url)
+            override_applied = True
+        except Exception:
+            pass
+
+    try:
+        prompt = (
+            f"用户正在阅读/撰写论文的「{section_name}」章节，当前内容如下（仅供参考，不要修改）：\n\n"
+            f"{content[:3000]}\n\n"
+            f"用户的提问/讨论：{message}\n\n"
+            f"请基于上述章节上下文回答用户的问题。要求：\n"
+            f"1. 用中文回答，条理清晰\n"
+            f"2. 直接回答问题，不要重复章节原文\n"
+            f"3. 如果章节中没有相关信息，明确说明并基于你的知识作答\n"
+            f"4. 不要修改章节内容，不要输出 JSON"
+        )
+        try:
+            reply = llm_client.chat(
+                [
+                    {"role": "system", "content": SYSTEM_PROMPT_BASE},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.5,
+                model="glm-4.7",
+            )
+        except LLMError as e:
+            logger.error(f"sub-chat LLM call failed: {e}")
+            return "", "error"
+        return (reply or "").strip(), "text"
+    finally:
+        if override_applied:
+            try:
+                llm_client.clear_override()
+            except Exception as clear_err:
+                logger.error(f"Failed to clear LLM override: {clear_err}")
 
 
 # --- Session Management ---

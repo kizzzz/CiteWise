@@ -85,10 +85,17 @@ class LLMClient:
     # ===== 同步接口 (兼容旧代码) =====
 
     def chat(self, messages: list[dict], temperature: float = 0.7,
-             max_tokens: int = 4000) -> str:
-        """基础对话接口"""
+             max_tokens: int = 4000, model: Optional[str] = None) -> str:
+        """基础对话接口
+
+        Args:
+            model: Optional model override. If None, uses ``self.model`` (the
+                project default, currently ``glm-4.7``). Callers that need a
+                specific model (e.g. submit endpoints pinning to glm-4.7 even
+                if the default changes) pass it explicitly here.
+        """
         kwargs = {
-            "model": self.model,
+            "model": model or self.model,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
@@ -101,11 +108,13 @@ class LLMClient:
             raise LLMError(f"LLM 调用失败: {str(e)}") from e
 
     def chat_json(self, messages: list[dict], temperature: float = 0.3,
-                  max_tokens: int = 4000, max_retries: int = 2) -> dict:
+                  max_tokens: int = 4000, max_retries: int = 2,
+                  model: Optional[str] = None) -> dict:
         """带 JSON 格式校验的对话，自动重试"""
         current_messages = list(messages)
         for attempt in range(max_retries + 1):
-            text = self.chat(current_messages, temperature=temperature, max_tokens=max_tokens)
+            text = self.chat(current_messages, temperature=temperature,
+                             max_tokens=max_tokens, model=model)
             try:
                 text = self._extract_json(text)
                 return json.loads(text)
