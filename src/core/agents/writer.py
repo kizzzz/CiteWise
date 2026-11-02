@@ -79,7 +79,7 @@ class WriterAgent(BaseAgent):
         ]
 
         self.think("调用 LLM 生成...")
-        content = self._llm.chat(messages, temperature=0.7, max_tokens=4000)
+        content = self._llm.chat(messages, temperature=0.7)
         self.think(f"生成完成: {len(content)} 字")
 
         # 来源标注

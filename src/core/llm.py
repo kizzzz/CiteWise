@@ -31,21 +31,15 @@ class LLMError(Exception):
 
 
 # 思考型 GLM 模型（glm-4.5/4.6/4.7、glm-z1 系列）的思考 token 计入 max_tokens。
-# 历史默认预算 4000 会被长推理整个吃掉：finish_reason=length、正文为空、且不抛异常，
-# 用户侧表现为"回答为空"。对思考型模型把请求预算抬到下限，正文才有输出空间。
+# 任何显式预算（旧的 4000 或抬高后的下限）都可能被长推理吃满，导致
+# finish_reason=length、正文为空且不报错。因此请求一律不传 max_tokens，
+# 由模型按需输出自然收束；仅在极端打满模型自身上限时关闭思考重试兜底。
 _THINKING_MODEL_PREFIXES = ("glm-4.5", "glm-4.6", "glm-4.7")
-_THINKING_TOKEN_FLOOR = 16000
 
 
 def _is_thinking_model(model: str) -> bool:
     m = (model or "").lower()
     return m.startswith(_THINKING_MODEL_PREFIXES) or "glm-z" in m
-
-
-def _request_max_tokens(model: str, max_tokens: int) -> int:
-    if _is_thinking_model(model):
-        return max(max_tokens, _THINKING_TOKEN_FLOOR)
-    return max_tokens
 
 
 class LLMClient:
@@ -103,7 +97,7 @@ class LLMClient:
     # ===== 同步接口 (兼容旧代码) =====
 
     def chat(self, messages: list[dict], temperature: float = 0.7,
-             max_tokens: int = 4000, model: Optional[str] = None) -> str:
+             model: Optional[str] = None) -> str:
         """基础对话接口
 
         Args:
@@ -117,7 +111,6 @@ class LLMClient:
             "model": use_model,
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": _request_max_tokens(use_model, max_tokens),
         }
         try:
             response = self.client.chat.completions.create(**kwargs)
@@ -125,11 +118,10 @@ class LLMClient:
             content = choice.message.content
             if (not content and choice.finish_reason == "length"
                     and _is_thinking_model(use_model)):
-                # 思考吃满预算、正文为空：关闭思考重试一次
-                logger.warning(f"LLM 思考耗尽预算(max_tokens={kwargs['max_tokens']})，关闭思考重试: {use_model}")
+                # 思考打满输出上限、正文为空：关闭思考重试一次
+                logger.warning(f"LLM 思考打满输出上限，关闭思考重试: {use_model}")
                 response = self.client.chat.completions.create(
-                    **{**kwargs, "max_tokens": max_tokens,
-                       "extra_body": {"thinking": {"type": "disabled"}}},
+                    **{**kwargs, "extra_body": {"thinking": {"type": "disabled"}}},
                 )
                 content = response.choices[0].message.content
             return content or ""
@@ -138,13 +130,13 @@ class LLMClient:
             raise LLMError(f"LLM 调用失败: {str(e)}") from e
 
     def chat_json(self, messages: list[dict], temperature: float = 0.3,
-                  max_tokens: int = 4000, max_retries: int = 2,
+                  max_retries: int = 2,
                   model: Optional[str] = None) -> dict:
         """带 JSON 格式校验的对话，自动重试"""
         current_messages = list(messages)
         for attempt in range(max_retries + 1):
             text = self.chat(current_messages, temperature=temperature,
-                             max_tokens=max_tokens, model=model)
+                             model=model)
             try:
                 text = self._extract_json(text)
                 return json.loads(text)
@@ -160,26 +152,23 @@ class LLMClient:
 
     # ===== 异步接口 (LangGraph 流式用) =====
 
-    async def achat(self, messages: list[dict], temperature: float = 0.7,
-                    max_tokens: int = 4000) -> str:
+    async def achat(self, messages: list[dict], temperature: float = 0.7) -> str:
         """异步对话接口"""
         try:
             response = await self.async_client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 temperature=temperature,
-                max_tokens=_request_max_tokens(self.model, max_tokens),
             )
             choice = response.choices[0]
             content = choice.message.content
             if (not content and choice.finish_reason == "length"
                     and _is_thinking_model(self.model)):
-                logger.warning(f"LLM 思考耗尽预算，关闭思考重试: {self.model}")
+                logger.warning(f"LLM 思考打满输出上限，关闭思考重试: {self.model}")
                 response = await self.async_client.chat.completions.create(
                     model=self.model,
                     messages=messages,
                     temperature=temperature,
-                    max_tokens=max_tokens,
                     extra_body={"thinking": {"type": "disabled"}},
                 )
                 content = response.choices[0].message.content
@@ -189,7 +178,7 @@ class LLMClient:
             raise LLMError(f"LLM 异步调用失败: {str(e)}") from e
 
     async def achat_stream(self, messages: list[dict], temperature: float = 0.7,
-                           max_tokens: int = 4000, api_key: Optional[str] = None,
+                           api_key: Optional[str] = None,
                            base_url: Optional[str] = None, model: Optional[str] = None) -> AsyncGenerator[str, None]:
         """异步流式对话 — 逐 token yield"""
         client = self.get_async_client(api_key, base_url)
@@ -198,7 +187,6 @@ class LLMClient:
             "model": use_model,
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": _request_max_tokens(use_model, max_tokens),
             "stream": True,
         }
         try:
@@ -218,11 +206,10 @@ class LLMClient:
                         finish_reason = choice.finish_reason
                 if yielded_any or finish_reason != "length" or not _is_thinking_model(use_model):
                     break
-                # 预算被思考全部耗尽且未 yield 任何内容（用户无感知），关闭思考重试一次
-                logger.warning(f"LLM 流式思考耗尽预算(max_tokens={kwargs['max_tokens']})，关闭思考重试: {use_model}")
+                # 输出被思考全部占满且未 yield 任何内容（用户无感知），关闭思考重试一次
+                logger.warning(f"LLM 流式思考打满输出上限，关闭思考重试: {use_model}")
                 kwargs = {
                     **kwargs,
-                    "max_tokens": max_tokens,
                     "extra_body": {"thinking": {"type": "disabled"}},
                 }
         except Exception as e:
@@ -230,11 +217,11 @@ class LLMClient:
             raise LLMError(f"LLM 流式调用失败: {str(e)}") from e
 
     async def achat_json(self, messages: list[dict], temperature: float = 0.3,
-                         max_tokens: int = 4000, max_retries: int = 2) -> dict:
+                         max_retries: int = 2) -> dict:
         """异步 JSON 对话"""
         current_messages = list(messages)
         for attempt in range(max_retries + 1):
-            text = await self.achat(current_messages, temperature=temperature, max_tokens=max_tokens)
+            text = await self.achat(current_messages, temperature=temperature)
             try:
                 text = self._extract_json(text)
                 return json.loads(text)

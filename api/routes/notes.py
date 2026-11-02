@@ -222,7 +222,7 @@ async def batch_classify(body: BatchClassifyBody, user: dict = Depends(require_a
     try:
         result = await llm_client.achat_json(
             [{"role": "user", "content": prompt}],
-            temperature=0.1, max_tokens=2000
+            temperature=0.1
         )
         if isinstance(result, list):
             classified = 0
@@ -391,7 +391,7 @@ async def suggest_type(note_id: str, user: dict = Depends(require_auth)):
     try:
         result = await llm_client.achat_json(
             [{"role": "user", "content": prompt}],
-            temperature=0.1, max_tokens=200
+            temperature=0.1
         )
         suggested = result.get("type", "通用笔记")
         confidence = result.get("confidence", 0.5)

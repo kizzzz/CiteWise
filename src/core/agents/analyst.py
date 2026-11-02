@@ -180,7 +180,7 @@ class AnalystAgent(BaseAgent):
         ]
 
         self.think("Analyst 生成方法/数据导向章节...")
-        content = self.llm.chat(messages, temperature=0.7, max_tokens=4000)
+        content = self.llm.chat(messages, temperature=0.7)
         self.think(f"生成完成: {len(content)} 字")
 
         content = annotate_sources(content, chunks, [])

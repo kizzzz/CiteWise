@@ -403,7 +403,7 @@ class CiteWiseAgent:
         ]
 
         self._think("调用 LLM 生成章节内容...")
-        content = self.llm.chat(messages, temperature=0.7, max_tokens=4000)
+        content = self.llm.chat(messages, temperature=0.7)
         self._think(f"章节生成完成，共 {len(content)} 字")
 
         # 程序化来源标注

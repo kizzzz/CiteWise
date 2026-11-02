@@ -231,7 +231,7 @@ async def async_extract_claims(content: str, api_key: str = None, base_url: str 
 
     try:
         # 使用 glm-4-flash 降低成本
-        result = await llm_client.achat_json(messages, temperature=0.2, max_tokens=2000)
+        result = await llm_client.achat_json(messages, temperature=0.2)
         claims = result.get("claims", [])
         logger.info(f"CoVe 异步提取到 {len(claims)} 个声明")
         return claims, None
@@ -265,7 +265,7 @@ async def async_verify_claims(claims: list[dict], rag_chunks: list[dict]) -> dic
     ]
 
     try:
-        result = await llm_client.achat_json(messages, temperature=0.2, max_tokens=2000)
+        result = await llm_client.achat_json(messages, temperature=0.2)
         logger.info(f"CoVe 异步验证完成, overall_score={result.get('overall_score', 'N/A')}")
         return result
     except Exception as e:

@@ -339,7 +339,7 @@ def decompose_query(query: str) -> list[str]:
         {"role": "user", "content": f"查询: {query}\n\n请分解为子查询，JSON 格式: {{\"subqueries\": [\"子查询1\", \"子查询2\"]}}"},
     ]
     try:
-        result = llm_client.chat_json(messages, temperature=0.3, max_tokens=300)
+        result = llm_client.chat_json(messages, temperature=0.3)
         subqueries = result.get("subqueries", [])
         if subqueries and len(subqueries) >= 2:
             logger.info(f"查询分解: '{query[:40]}...' → {len(subqueries)} 个子查询")

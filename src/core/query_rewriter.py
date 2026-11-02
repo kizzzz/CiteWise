@@ -15,7 +15,7 @@ def rewrite_query(query: str, intent: str = "explore") -> str:
         {"role": "user", "content": f"意图: {intent}\n原始查询: {query}\n请改写为精确的检索词:"},
     ]
     try:
-        result = llm_client.chat(messages, temperature=0.3, max_tokens=200)
+        result = llm_client.chat(messages, temperature=0.3)
         rewritten = result.strip()
         if rewritten and len(rewritten) >= len(query) * 0.3:
             logger.info(f"查询改写: '{query[:40]}...' → '{rewritten[:40]}...'")
@@ -36,7 +36,7 @@ def generate_hypothetical_answer(query: str) -> str:
         {"role": "user", "content": query},
     ]
     try:
-        result = llm_client.chat(messages, temperature=0.5, max_tokens=300)
+        result = llm_client.chat(messages, temperature=0.5)
         hypothetical = result.strip()
         if hypothetical:
             logger.info(f"HyDE 生成假设回答: {len(hypothetical)} 字")

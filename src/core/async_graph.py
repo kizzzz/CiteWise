@@ -181,7 +181,7 @@ async def _async_generate_section(section_name, section_topic, research_result,
 
     # 流式收集
     collected_tokens = []
-    async for token in llm_client.achat_stream(messages, temperature=0.7, max_tokens=4000):
+    async for token in llm_client.achat_stream(messages, temperature=0.7):
         collected_tokens.append(token)
     content = "".join(collected_tokens)
     content = annotate_sources(content, chunks, [])

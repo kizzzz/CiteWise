@@ -200,4 +200,4 @@ def summarize_section(llm_client, content: str) -> str:
         {"role": "system", "content": "将以下论文章节压缩为100字以内的简洁摘要，保留核心观点和关键引用。"},
         {"role": "user", "content": content[:3000]},
     ]
-    return llm_client.chat(messages, temperature=0.3, max_tokens=200)
+    return llm_client.chat(messages, temperature=0.3)

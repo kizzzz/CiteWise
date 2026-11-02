@@ -68,7 +68,7 @@ def web_search_with_llm_summary(query: str) -> dict:
 
     llm_response = llm_client.chat(
         [{"role": "user", "content": llm_prompt}],
-        temperature=0.5, max_tokens=300
+        temperature=0.5
     )
 
     return {
