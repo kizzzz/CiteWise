@@ -30,6 +30,24 @@ class LLMError(Exception):
     pass
 
 
+# 思考型 GLM 模型（glm-4.5/4.6/4.7、glm-z1 系列）的思考 token 计入 max_tokens。
+# 历史默认预算 4000 会被长推理整个吃掉：finish_reason=length、正文为空、且不抛异常，
+# 用户侧表现为"回答为空"。对思考型模型把请求预算抬到下限，正文才有输出空间。
+_THINKING_MODEL_PREFIXES = ("glm-4.5", "glm-4.6", "glm-4.7")
+_THINKING_TOKEN_FLOOR = 16000
+
+
+def _is_thinking_model(model: str) -> bool:
+    m = (model or "").lower()
+    return m.startswith(_THINKING_MODEL_PREFIXES) or "glm-z" in m
+
+
+def _request_max_tokens(model: str, max_tokens: int) -> int:
+    if _is_thinking_model(model):
+        return max(max_tokens, _THINKING_TOKEN_FLOOR)
+    return max_tokens
+
+
 class LLMClient:
     """统一的 LLM 调用客户端"""
 
@@ -94,15 +112,27 @@ class LLMClient:
                 specific model (e.g. submit endpoints pinning to glm-4.7 even
                 if the default changes) pass it explicitly here.
         """
+        use_model = model or self.model
         kwargs = {
-            "model": model or self.model,
+            "model": use_model,
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": max_tokens,
+            "max_tokens": _request_max_tokens(use_model, max_tokens),
         }
         try:
             response = self.client.chat.completions.create(**kwargs)
-            return response.choices[0].message.content
+            choice = response.choices[0]
+            content = choice.message.content
+            if (not content and choice.finish_reason == "length"
+                    and _is_thinking_model(use_model)):
+                # 思考吃满预算、正文为空：关闭思考重试一次
+                logger.warning(f"LLM 思考耗尽预算(max_tokens={kwargs['max_tokens']})，关闭思考重试: {use_model}")
+                response = self.client.chat.completions.create(
+                    **{**kwargs, "max_tokens": max_tokens,
+                       "extra_body": {"thinking": {"type": "disabled"}}},
+                )
+                content = response.choices[0].message.content
+            return content or ""
         except Exception as e:
             logger.error(f"LLM 调用失败: {e}")
             raise LLMError(f"LLM 调用失败: {str(e)}") from e
@@ -138,9 +168,22 @@ class LLMClient:
                 model=self.model,
                 messages=messages,
                 temperature=temperature,
-                max_tokens=max_tokens,
+                max_tokens=_request_max_tokens(self.model, max_tokens),
             )
-            return response.choices[0].message.content
+            choice = response.choices[0]
+            content = choice.message.content
+            if (not content and choice.finish_reason == "length"
+                    and _is_thinking_model(self.model)):
+                logger.warning(f"LLM 思考耗尽预算，关闭思考重试: {self.model}")
+                response = await self.async_client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    extra_body={"thinking": {"type": "disabled"}},
+                )
+                content = response.choices[0].message.content
+            return content or ""
         except Exception as e:
             logger.error(f"LLM 异步调用失败: {e}")
             raise LLMError(f"LLM 异步调用失败: {str(e)}") from e
@@ -151,18 +194,37 @@ class LLMClient:
         """异步流式对话 — 逐 token yield"""
         client = self.get_async_client(api_key, base_url)
         use_model = model or self.model
+        kwargs = {
+            "model": use_model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": _request_max_tokens(use_model, max_tokens),
+            "stream": True,
+        }
         try:
-            stream = await client.chat.completions.create(
-                model=use_model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stream=True,
-            )
-            async for chunk in stream:
-                delta = chunk.choices[0].delta if chunk.choices else None
-                if delta and delta.content:
-                    yield delta.content
+            for _attempt in range(2):
+                yielded_any = False
+                finish_reason = None
+                stream = await client.chat.completions.create(**kwargs)
+                async for chunk in stream:
+                    if not chunk.choices:
+                        continue
+                    choice = chunk.choices[0]
+                    delta = choice.delta
+                    if delta and delta.content:
+                        yielded_any = True
+                        yield delta.content
+                    if choice.finish_reason:
+                        finish_reason = choice.finish_reason
+                if yielded_any or finish_reason != "length" or not _is_thinking_model(use_model):
+                    break
+                # 预算被思考全部耗尽且未 yield 任何内容（用户无感知），关闭思考重试一次
+                logger.warning(f"LLM 流式思考耗尽预算(max_tokens={kwargs['max_tokens']})，关闭思考重试: {use_model}")
+                kwargs = {
+                    **kwargs,
+                    "max_tokens": max_tokens,
+                    "extra_body": {"thinking": {"type": "disabled"}},
+                }
         except Exception as e:
             logger.error(f"LLM 流式调用失败: {e}")
             raise LLMError(f"LLM 流式调用失败: {str(e)}") from e
